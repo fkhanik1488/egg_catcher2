@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"flag"
 	"fmt"
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/audio"
@@ -9,6 +10,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	_ "github.com/mattn/go-sqlite3"
+	"golang.org/x/crypto/bcrypt"
 	"image/color"
 	_ "io"
 	"log"
@@ -51,6 +53,9 @@ type Game struct {
 	quitButton        Button
 	leaderboardButton Button
 	playerID          int
+	loseHeartPlayer   *audio.Player
+	gainHeartPlayer   *audio.Player
+	scoreHeartPlayer  *audio.Player
 }
 
 type Hen struct {
@@ -59,7 +64,7 @@ type Hen struct {
 
 type Egg struct {
 	x, y        float64
-	vx, vy      float64 // Velocity components
+	vx, vy      float64
 	phase       string
 	transitionX float64
 	active      bool
@@ -72,6 +77,11 @@ type Button struct {
 	hovered    bool
 }
 
+func (b *Button) IsInside(x, y float64) bool {
+	scale := 1.5
+	return x >= b.x*scale && x <= (b.x+b.w)*scale && y >= b.y*scale && y <= (b.y+b.h)*scale
+}
+
 type Player struct {
 	ID        int
 	Name      string
@@ -79,34 +89,43 @@ type Player struct {
 }
 
 type AuthState struct {
-	db           *sql.DB
-	username     string
-	isRegister   bool // True for registration, false for login
-	loginButton  Button
-	regButton    Button
-	submitButton Button
-	errorMsg     string
-	playerID     int  // Set on successful auth
-	done         bool // True when auth is complete
+	db              *sql.DB
+	username        string
+	password        string
+	authPhase       string
+	passwordEntered bool
+	isRegister      bool
+	loginButton     Button
+	regButton       Button
+	submitButton    Button
+	errorMsg        string
+	playerID        int
+	done            bool
 }
 
 type GameWrapper struct {
-	authState *AuthState
-	game      *Game
+	authState        *AuthState
+	game             *Game
+	loseHeartPlayer  *audio.Player
+	gainHeartPlayer  *audio.Player
+	scoreHeartPlayer *audio.Player
 }
 
-func NewGame(playerID int) *Game {
+func NewGame(playerID int, loseHeartPlayer, gainHeartPlayer, scoreHeartPlayer *audio.Player) *Game {
 	g := &Game{
-		wolfX:           screenWidth/2 - wolfWidth/2,
-		wolfY:           screenHeight - wolfHeight - 20,
-		basketY:         screenHeight - wolfHeight - basketHeight - 10,
-		level:           1,
-		score:           0,
-		record:          0,
-		lives:           3,
-		gameOver:        false,
-		showLeaderboard: false,
-		playerID:        playerID,
+		wolfX:            screenWidth/2 - wolfWidth/2,
+		wolfY:            screenHeight - wolfHeight - 20,
+		basketY:          screenHeight - wolfHeight - basketHeight - 10,
+		level:            1,
+		score:            0,
+		record:           0,
+		lives:            3,
+		gameOver:         false,
+		showLeaderboard:  false,
+		playerID:         playerID,
+		loseHeartPlayer:  loseHeartPlayer,
+		gainHeartPlayer:  gainHeartPlayer,
+		scoreHeartPlayer: scoreHeartPlayer,
 	}
 	loadPlayerData(g)
 	g.hens[0] = Hen{x: 150, y: 50}
@@ -162,11 +181,11 @@ func (g *Game) spawnEgg() {
 	if vx > 0 {
 		offset = -5
 	} else {
-		offset = -15
+		offset = -5
 	}
 	g.eggs = append(g.eggs, Egg{
 		x:           eggX,
-		y:           g.hens[henIndex].y + henHeight + offset,
+		y:           g.hens[henIndex].y + float64(henHeight) + offset,
 		vx:          vx,
 		vy:          baseSpeed / math.Sqrt(2),
 		phase:       "rolling",
@@ -185,7 +204,8 @@ func initDB() (*sql.DB, error) {
 		CREATE TABLE IF NOT EXISTS players (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL UNIQUE,
-			high_score INTEGER DEFAULT 0
+			high_score INTEGER DEFAULT 0,
+			password TEXT NOT NULL
 		)
 	`)
 	if err != nil {
@@ -207,12 +227,16 @@ func initDB() (*sql.DB, error) {
 	return db, nil
 }
 
-func authenticate(db *sql.DB, username string, isRegister bool) (int, error) {
+func authenticate(db *sql.DB, username, password string, isRegister bool) (int, error) {
 	if username == "" {
 		return 0, fmt.Errorf("username cannot be empty")
 	}
+	if password == "" && isRegister {
+		return 0, fmt.Errorf("password cannot be empty")
+	}
 	var playerID int
 	var exists int
+	var storedPassword string
 	err := db.QueryRow("SELECT COUNT(*) FROM players WHERE name = ?", username).Scan(&exists)
 	if err != nil {
 		return 0, fmt.Errorf("failed to check user existence: %v", err)
@@ -222,7 +246,11 @@ func authenticate(db *sql.DB, username string, isRegister bool) (int, error) {
 		if exists > 0 {
 			return 0, fmt.Errorf("username already taken")
 		}
-		result, err := db.Exec("INSERT INTO players (name, high_score) VALUES (?, 0)", username)
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			return 0, fmt.Errorf("failed to hash password: %v", err)
+		}
+		result, err := db.Exec("INSERT INTO players (name, high_score, password) VALUES (?, 0, ?)", username, string(hashedPassword))
 		if err != nil {
 			return 0, fmt.Errorf("failed to insert new player: %v", err)
 		}
@@ -237,9 +265,12 @@ func authenticate(db *sql.DB, username string, isRegister bool) (int, error) {
 	if exists == 0 {
 		return 0, fmt.Errorf("user does not exist")
 	}
-	err = db.QueryRow("SELECT id FROM players WHERE name = ?", username).Scan(&playerID)
+	err = db.QueryRow("SELECT id, password FROM players WHERE name = ?", username).Scan(&playerID, &storedPassword)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get existing player ID: %v", err)
+		return 0, fmt.Errorf("failed to get player data: %v", err)
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(storedPassword), []byte(password)); err != nil {
+		return 0, fmt.Errorf("incorrect password")
 	}
 	return playerID, nil
 }
@@ -252,7 +283,7 @@ func loadPlayerData(g *Game) {
 	err := db.QueryRow("SELECT id, name, high_score FROM players WHERE id = ?", g.playerID).Scan(&player.ID, &player.Name, &player.HighScore)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			_, err = db.Exec("INSERT INTO players (name, high_score) VALUES (?, 0)", "Player1")
+			_, err = db.Exec("INSERT INTO players (name, high_score, password) VALUES (?, 0, ?)", "Player1", "")
 			if err != nil {
 				log.Printf("Error creating default player: %v", err)
 				return
@@ -317,18 +348,27 @@ func loadLeaderboard() []Player {
 }
 
 func (a *AuthState) Update() error {
-	// Handle text input
 	runes := ebiten.AppendInputChars(nil)
-	for _, r := range runes {
-		if len(a.username) < 20 { // Limit username length
-			a.username += string(r)
+	if a.authPhase == "username" || (a.authPhase == "register" && !a.passwordEntered) {
+		for _, r := range runes {
+			if len(a.username) < 20 {
+				a.username += string(r)
+			}
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyBackspace) && len(a.username) > 0 {
+			a.username = a.username[:len(a.username)-1]
+		}
+	} else if a.authPhase == "password" || (a.authPhase == "register" && a.passwordEntered) {
+		for _, r := range runes {
+			if len(a.password) < 20 {
+				a.password += string(r)
+			}
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyBackspace) && len(a.password) > 0 {
+			a.password = a.password[:len(a.password)-1]
 		}
 	}
-	if inpututil.IsKeyJustPressed(ebiten.KeyBackspace) && len(a.username) > 0 {
-		a.username = a.username[:len(a.username)-1]
-	}
 
-	// Handle mouse input
 	cx, cy := ebiten.CursorPosition()
 	mx, my := float64(cx), float64(cy)
 	a.loginButton.hovered = a.loginButton.IsInside(mx, my)
@@ -336,39 +376,125 @@ func (a *AuthState) Update() error {
 	a.submitButton.hovered = a.submitButton.IsInside(mx, my)
 
 	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
-		if a.loginButton.hovered {
+		if a.loginButton.hovered && a.authPhase == "username" {
 			a.isRegister = false
 			a.errorMsg = ""
-		} else if a.regButton.hovered {
+			a.username = ""
+			a.password = ""
+			a.passwordEntered = false
+		} else if a.regButton.hovered && a.authPhase == "username" {
 			a.isRegister = true
+			a.authPhase = "register"
 			a.errorMsg = ""
+			a.username = ""
+			a.password = ""
+			a.passwordEntered = false
 		} else if a.submitButton.hovered {
-			playerID, err := authenticate(a.db, strings.TrimSpace(a.username), a.isRegister)
-			if err != nil {
-				a.errorMsg = err.Error()
-			} else {
-				a.playerID = playerID
-				a.done = true
+			if a.authPhase == "username" && !a.isRegister {
+				var exists int
+				err := a.db.QueryRow("SELECT COUNT(*) FROM players WHERE name = ?", strings.TrimSpace(a.username)).Scan(&exists)
+				if err != nil {
+					a.errorMsg = "Failed to check username"
+				} else if exists == 0 {
+					a.errorMsg = "User does not exist"
+				} else {
+					a.authPhase = "password"
+					a.errorMsg = ""
+					a.password = ""
+					a.passwordEntered = false
+				}
+			} else if a.authPhase == "password" && a.passwordEntered {
+				playerID, err := authenticate(a.db, strings.TrimSpace(a.username), strings.TrimSpace(a.password), false)
+				if err != nil {
+					a.errorMsg = err.Error()
+					a.authPhase = "username"
+					a.password = ""
+					a.passwordEntered = false
+				} else {
+					a.playerID = playerID
+					a.done = true
+				}
+			} else if a.authPhase == "register" && a.passwordEntered {
+				playerID, err := authenticate(a.db, strings.TrimSpace(a.username), strings.TrimSpace(a.password), true)
+				if err != nil {
+					a.errorMsg = err.Error()
+					a.authPhase = "username"
+					a.username = ""
+					a.password = ""
+					a.passwordEntered = false
+				} else {
+					a.playerID = playerID
+					a.done = true
+				}
 			}
 		}
 	}
 
 	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
-		playerID, err := authenticate(a.db, strings.TrimSpace(a.username), a.isRegister)
-		if err != nil {
-			a.errorMsg = err.Error()
-		} else {
-			a.playerID = playerID
-			a.done = true
+		if a.authPhase == "username" && !a.isRegister {
+			var exists int
+			err := a.db.QueryRow("SELECT COUNT(*) FROM players WHERE name = ?", strings.TrimSpace(a.username)).Scan(&exists)
+			if err != nil {
+				a.errorMsg = "Failed to check username"
+			} else if exists == 0 {
+				a.errorMsg = "User does not exist"
+			} else {
+				a.authPhase = "password"
+				a.errorMsg = ""
+				a.password = ""
+				a.passwordEntered = false
+			}
+		} else if a.authPhase == "password" {
+			if !a.passwordEntered {
+				a.passwordEntered = true
+				a.errorMsg = ""
+			} else {
+				playerID, err := authenticate(a.db, strings.TrimSpace(a.username), strings.TrimSpace(a.password), false)
+				if err != nil {
+					a.errorMsg = err.Error()
+					a.authPhase = "username"
+					a.password = ""
+					a.passwordEntered = false
+				} else {
+					a.playerID = playerID
+					a.done = true
+				}
+			}
+		} else if a.authPhase == "register" {
+			if !a.passwordEntered {
+				if strings.TrimSpace(a.username) == "" {
+					a.errorMsg = "Username cannot be empty"
+				} else {
+					var exists int
+					err := a.db.QueryRow("SELECT COUNT(*) FROM players WHERE name = ?", strings.TrimSpace(a.username)).Scan(&exists)
+					if err != nil {
+						a.errorMsg = "Failed to check username"
+					} else if exists > 0 {
+						a.errorMsg = "Username already taken"
+						a.username = ""
+					} else {
+						a.passwordEntered = true
+						a.errorMsg = ""
+						a.password = ""
+					}
+				}
+			} else {
+				playerID, err := authenticate(a.db, strings.TrimSpace(a.username), strings.TrimSpace(a.password), true)
+				if err != nil {
+					a.errorMsg = err.Error()
+					a.authPhase = "username"
+					a.username = ""
+					a.password = ""
+					a.passwordEntered = false
+				} else {
+					a.playerID = playerID
+					a.done = true
+				}
+			}
 		}
 	}
 
 	return nil
-}
-
-func (b *Button) IsInside(x, y float64) bool {
-	scale := 1.5
-	return x >= b.x*scale && x <= (b.x+b.w)*scale && y >= b.y*scale && y <= (b.y+b.h)*scale
 }
 
 func (a *AuthState) Draw(screen *ebiten.Image) {
@@ -376,14 +502,21 @@ func (a *AuthState) Draw(screen *ebiten.Image) {
 
 	textImg := ebiten.NewImage(screenWidth, screenHeight)
 	ebitenutil.DebugPrintAt(textImg, "Welcome to Egg Catcher: Wolf Edition!", screenWidth/3-100, screenHeight/3-100)
-	ebitenutil.DebugPrintAt(textImg, "Username: "+a.username+"_", screenWidth/3-50, screenHeight/3-50)
+	if a.authPhase == "username" || (a.authPhase == "register" && !a.passwordEntered) {
+		ebitenutil.DebugPrintAt(textImg, "Username: "+a.username+"_", screenWidth/3-50, screenHeight/3-50)
+	}
+	if a.authPhase == "password" || (a.authPhase == "register" && a.passwordEntered) {
+		displayPassword := strings.Repeat("*", len(a.password))
+		ebitenutil.DebugPrintAt(textImg, "Password: "+displayPassword+"_", screenWidth/3-50, screenHeight/3-20)
+	}
 	if a.errorMsg != "" {
-		ebitenutil.DebugPrintAt(textImg, "Error: "+a.errorMsg, screenWidth/3-70, screenHeight/3-20)
+		ebitenutil.DebugPrintAt(textImg, "Error: "+a.errorMsg, screenWidth/3-70, screenHeight/3+10)
 	}
 
-	// Draw buttons
-	a.drawButton(textImg, &a.loginButton)
-	a.drawButton(textImg, &a.regButton)
+	if a.authPhase == "username" {
+		a.drawButton(textImg, &a.loginButton)
+		a.drawButton(textImg, &a.regButton)
+	}
 	a.drawButton(textImg, &a.submitButton)
 
 	op := &ebiten.DrawImageOptions{}
@@ -410,7 +543,7 @@ func (w *GameWrapper) Update() error {
 		return w.authState.Update()
 	}
 	if w.authState != nil && w.authState.done {
-		w.game = NewGame(w.authState.playerID)
+		w.game = NewGame(w.authState.playerID, w.loseHeartPlayer, w.gainHeartPlayer, w.scoreHeartPlayer)
 		w.authState = nil
 	}
 	if w.game != nil {
@@ -433,7 +566,6 @@ func (w *GameWrapper) Layout(outsideWidth, outsideHeight int) (int, int) {
 
 func (g *Game) Update() error {
 	if g.gameOver {
-		// Handle mouse input
 		cx, cy := ebiten.CursorPosition()
 		mx, my := float64(cx), float64(cy)
 		g.replayButton.hovered = g.replayButton.IsInside(mx, my)
@@ -445,7 +577,7 @@ func (g *Game) Update() error {
 				if err := saveGameData(g); err != nil {
 					log.Printf("Error saving game data: %v", err)
 				}
-				*g = *NewGame(g.playerID)
+				*g = *NewGame(g.playerID, g.loseHeartPlayer, g.gainHeartPlayer, g.scoreHeartPlayer)
 			} else if g.quitButton.hovered {
 				if err := saveGameData(g); err != nil {
 					log.Printf("Error saving game data: %v", err)
@@ -456,12 +588,11 @@ func (g *Game) Update() error {
 			}
 		}
 
-		// Preserve keyboard input
 		if inpututil.IsKeyJustPressed(ebiten.KeyR) {
 			if err := saveGameData(g); err != nil {
 				log.Printf("Error saving game data: %v", err)
 			}
-			*g = *NewGame(g.playerID)
+			*g = *NewGame(g.playerID, g.loseHeartPlayer, g.gainHeartPlayer, g.scoreHeartPlayer)
 		}
 		if inpututil.IsKeyJustPressed(ebiten.KeyQ) {
 			if err := saveGameData(g); err != nil {
@@ -475,12 +606,10 @@ func (g *Game) Update() error {
 		return nil
 	}
 
-	// Update level every 5 points
 	if g.score > 10*g.level && g.level < 20 {
 		g.level++
 	}
 
-	// Control wolf and basket
 	if ebiten.IsKeyPressed(ebiten.KeyA) && g.wolfX > 0 {
 		g.wolfX -= 5
 	}
@@ -494,7 +623,6 @@ func (g *Game) Update() error {
 		g.basketY += 5
 	}
 
-	// Egg spawning and movement
 	canDropEgg := true
 	for _, egg := range g.eggs {
 		if egg.active {
@@ -509,8 +637,7 @@ func (g *Game) Update() error {
 	for i := range g.eggs {
 		if g.eggs[i].active {
 			if g.eggs[i].phase == "rolling" {
-				// Accelerate along 45° chute
-				accel := 0.03 + 0.01*float64(g.level) // Gravity component along chute
+				accel := 0.03 + 0.01*float64(g.level)
 				if g.eggs[i].vx > 0 {
 					g.eggs[i].vx += accel / math.Sqrt(2)
 					g.eggs[i].vy += accel / math.Sqrt(2)
@@ -524,8 +651,8 @@ func (g *Game) Update() error {
 					(g.eggs[i].vx < 0 && g.eggs[i].x <= g.eggs[i].transitionX) {
 					g.eggs[i].phase = "falling"
 				}
-			} else { // falling
-				g.eggs[i].vy += 0.1 // Gravitational acceleration
+			} else {
+				g.eggs[i].vy += 0.1
 				g.eggs[i].x += g.eggs[i].vx
 				g.eggs[i].y += g.eggs[i].vy
 			}
@@ -533,6 +660,12 @@ func (g *Game) Update() error {
 				g.eggs[i].active = false
 				if g.eggs[i].value != 0 {
 					g.lives--
+					if g.loseHeartPlayer != nil {
+						if err := g.loseHeartPlayer.Rewind(); err != nil {
+							// No logging
+						}
+						g.loseHeartPlayer.Play()
+					}
 				}
 			}
 			if g.eggs[i].y >= g.basketY && g.eggs[i].y <= g.basketY+basketHeight &&
@@ -540,11 +673,29 @@ func (g *Game) Update() error {
 				g.eggs[i].active = false
 				if g.eggs[i].value != 0 {
 					g.score++
+					if g.eggs[i].value == 2 && g.scoreHeartPlayer != nil {
+						if err := g.scoreHeartPlayer.Rewind(); err != nil {
+							// No logging
+						}
+						g.scoreHeartPlayer.Play()
+					}
 					if g.eggs[i].value == 1 && g.lives < 3 {
 						g.lives++
+						if g.gainHeartPlayer != nil {
+							if err := g.gainHeartPlayer.Rewind(); err != nil {
+								// No logging
+							}
+							g.gainHeartPlayer.Play()
+						}
 					}
 				} else {
 					g.lives--
+					if g.loseHeartPlayer != nil {
+						if err := g.loseHeartPlayer.Rewind(); err != nil {
+							// No logging
+						}
+						g.loseHeartPlayer.Play()
+					}
 				}
 				if g.score > g.record {
 					g.record = g.score
@@ -601,18 +752,14 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		return
 	}
 
-	// Draw wolf
 	ebitenutil.DrawRect(screen, g.wolfX, g.wolfY, wolfWidth, wolfHeight, color.RGBA{0, 255, 0, 255})
-	// Draw basket
 	basketX := g.wolfX - basketWidth/2 + wolfWidth/2
 	ebitenutil.DrawRect(screen, basketX, g.basketY, basketWidth, basketHeight, color.RGBA{255, 0, 0, 255})
 
-	// Draw hens
 	for _, hen := range g.hens {
 		ebitenutil.DrawRect(screen, hen.x, hen.y, henWidth, henHeight, color.RGBA{255, 255, 0, 255})
 	}
 
-	// Draw chutes
 	for _, hen := range g.hens {
 		startX := hen.x + henWidth/2 - eggSize/2
 		startY := hen.y + henHeight
@@ -622,7 +769,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 			endY = startY + 67.5
 		} else {
 			endX = startX - 82.5
-			endY = startY + 82.5
+			endY = startY + 67.5
 		}
 		length := math.Hypot(endX-startX, endY-startY)
 		tempImg := ebiten.NewImage(int(length), 10)
@@ -634,7 +781,6 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		screen.DrawImage(tempImg, op)
 	}
 
-	// Draw eggs
 	for _, egg := range g.eggs {
 		if egg.active {
 			tempImg := ebiten.NewImage(int(eggSize), int(eggSize))
@@ -651,14 +797,13 @@ func (g *Game) Draw(screen *ebiten.Image) {
 			op.GeoM.Rotate(egg.y / 20 * 2 * math.Pi)
 			yOffset := 0.0
 			if egg.phase == "rolling" {
-				yOffset = -4 // Adjusted for top alignment
+				yOffset = -4
 			}
 			op.GeoM.Translate(egg.x+eggSize/2, egg.y+eggSize/2+yOffset)
 			screen.DrawImage(tempImg, op)
 		}
 	}
 
-	// Draw lives
 	for i := 0; i < 3; i++ {
 		heartColor := color.RGBA{255, 0, 0, 255}
 		if i >= g.lives {
@@ -667,7 +812,6 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		ebitenutil.DrawRect(screen, float64(screenWidth-100+i*30), 20, heartSize, heartSize, heartColor)
 	}
 
-	// Draw score, record, lives, level
 	textImg := ebiten.NewImage(screenWidth, screenHeight)
 	ebitenutil.DebugPrint(textImg, fmt.Sprintf("Score: %d Record: %d Lives: %d Level: %d", g.score, g.record, g.lives, g.level))
 	op := &ebiten.DrawImageOptions{}
@@ -689,37 +833,135 @@ func (g *Game) drawButton(screen *ebiten.Image, b *Button) {
 	ebitenutil.DebugPrintAt(screen, b.label, int(b.x+(b.w-float64(len(b.label)*7))/2), int(b.y+b.h/2))
 }
 
+func clearDatabase(db *sql.DB) error {
+	_, err := db.Exec("DELETE FROM games")
+	if err != nil {
+		return fmt.Errorf("failed to clear games table: %v", err)
+	}
+	_, err = db.Exec("DELETE FROM players")
+	if err != nil {
+		return fmt.Errorf("failed to clear players table: %v", err)
+	}
+	return nil
+}
+
 func main() {
+	clear := flag.Bool("clear", false, "Clear all database data")
+	flag.Parse()
+
 	rand.Seed(time.Now().UnixNano())
-	// Initialize audio context
 	audioContext := audio.NewContext(44100)
-	// Load MP3 file
+
 	mp3File, err := os.Open("converted_new_music.mp3")
 	if err != nil {
-		log.Fatal("Error opening MP3 file: %v", err)
+		log.Fatal("Error opening converted_new_music.mp3: %v", err)
 	}
 	defer mp3File.Close()
-	mp3Stream, err := mp3.DecodeWithSampleRate(44100, mp3File)
-	if err != nil {
-		log.Fatal("Error decoding MP3: %v", err)
+	if mp3File != nil {
+		mp3Stream, err := mp3.DecodeWithSampleRate(44100, mp3File)
+		if err != nil {
+			log.Fatal("Error decoding converted_new_music.mp3: %v", err)
+		}
+		if mp3Stream != nil {
+			player, err := audioContext.NewPlayer(audio.NewInfiniteLoop(mp3Stream, mp3Stream.Length()))
+			if err != nil {
+				log.Fatal("Error creating background music player: %v", err)
+			}
+			if player != nil {
+				player.SetVolume(1.0)
+				player.Play()
+			}
+		}
 	}
-	// Create looping player
-	player, err := audioContext.NewPlayer(audio.NewInfiniteLoop(mp3Stream, mp3Stream.Length()))
+
+	loseHeartFile, err := os.Open("lose_heart.mp3")
 	if err != nil {
-		log.Fatal("Error creating audio player: %v", err)
+		// No logging
 	}
-	// Start playing
-	player.Play()
+	var loseHeartPlayer *audio.Player
+	if loseHeartFile != nil {
+		defer loseHeartFile.Close()
+		loseHeartStream, err := mp3.DecodeWithSampleRate(44100, loseHeartFile)
+		if err != nil {
+			// No logging
+		}
+		if loseHeartStream != nil {
+			loseHeartPlayer, err = audioContext.NewPlayer(loseHeartStream)
+			if err != nil {
+				// No logging
+			}
+			if loseHeartPlayer != nil {
+				loseHeartPlayer.SetVolume(1.0)
+			}
+		}
+	}
+
+	gainHeartFile, err := os.Open("gain_heart.mp3")
+	if err != nil {
+		// No logging
+	}
+	var gainHeartPlayer *audio.Player
+	if gainHeartFile != nil {
+		defer gainHeartFile.Close()
+		gainHeartStream, err := mp3.DecodeWithSampleRate(44100, gainHeartFile)
+		if err != nil {
+			// No logging
+		}
+		if gainHeartStream != nil {
+			gainHeartPlayer, err = audioContext.NewPlayer(gainHeartStream)
+			if err != nil {
+				// No logging
+			}
+			if gainHeartPlayer != nil {
+				gainHeartPlayer.SetVolume(1.0)
+			}
+		}
+	}
+
+	scoreHeartFile, err := os.Open("score_heart.mp3")
+	if err != nil {
+		// No logging
+	}
+	var scoreHeartPlayer *audio.Player
+	if scoreHeartFile != nil {
+		defer scoreHeartFile.Close()
+		scoreHeartStream, err := mp3.DecodeWithSampleRate(44100, scoreHeartFile)
+		if err != nil {
+			// No logging
+		}
+		if scoreHeartStream != nil {
+			scoreHeartPlayer, err = audioContext.NewPlayer(scoreHeartStream)
+			if err != nil {
+				// No logging
+			}
+			if scoreHeartPlayer != nil {
+				scoreHeartPlayer.SetVolume(1.5)
+			}
+		}
+	}
+
 	ebiten.SetWindowSize(screenWidth, screenHeight)
 	ebiten.SetWindowTitle("Egg Catcher: Wolf Edition")
+
 	db, err = initDB()
 	if err != nil {
 		log.Fatal("Error initializing database: %v", err)
 	}
 	defer db.Close()
+
+	if *clear {
+		err := clearDatabase(db)
+		if err != nil {
+			log.Fatal("Error clearing database: %v", err)
+		}
+		fmt.Println("Database cleared successfully")
+		os.Exit(0)
+	}
+
 	wrapper := &GameWrapper{
 		authState: &AuthState{
-			db: db,
+			db:        db,
+			authPhase: "username",
 			loginButton: Button{
 				x:     screenWidth/3 - buttonWidth - 10,
 				y:     screenHeight/3 + 20,
@@ -742,6 +984,9 @@ func main() {
 				label: "Submit",
 			},
 		},
+		loseHeartPlayer:  loseHeartPlayer,
+		gainHeartPlayer:  gainHeartPlayer,
+		scoreHeartPlayer: scoreHeartPlayer,
 	}
 	if err := ebiten.RunGame(wrapper); err != nil {
 		log.Fatal(err)

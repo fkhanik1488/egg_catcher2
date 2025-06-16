@@ -5,6 +5,7 @@ go 1.24
 require (
 	github.com/hajimehoshi/ebiten/v2 v2.8.8
 	github.com/mattn/go-sqlite3 v1.14.28
+	golang.org/x/crypto v0.39.0
 )
 
 require (
@@ -16,5 +17,5 @@ require (
 	github.com/jezek/xgb v1.1.1 // indirect
 	golang.org/x/image v0.28.0 // indirect
 	golang.org/x/sync v0.15.0 // indirect
-	golang.org/x/sys v0.30.0 // indirect
+	golang.org/x/sys v0.33.0 // indirect
 )
