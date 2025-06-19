@@ -5,16 +5,17 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="3069c0a6-c46a-479f-8df5-8c26747115a4" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/gain_heart.mp3" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/lose_heart.mp3" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/score_heart.mp3" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/background_music.mp3" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/converted_background_music.mp3" beforeDir="false" />
+      <change afterPath="$PROJECT_DIR$/../egg_catcher3/cmd/main.go" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../egg_catcher3/constants/constants.go" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../egg_catcher3/internal/auth/auth.go" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../egg_catcher3/internal/db/database.go" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../egg_catcher3/internal/game/game.go" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../egg_catcher3/pkg/game/advanced.go" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../egg_catcher3/pkg/graphics/assets.go" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../egg_catcher3/pkg/graphics/renderer.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/egg_catcher.db" beforeDir="false" afterPath="$PROJECT_DIR$/egg_catcher.db" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/egg_catcher2.exe" beforeDir="false" afterPath="$PROJECT_DIR$/egg_catcher2.exe" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/go.mod" beforeDir="false" afterPath="$PROJECT_DIR$/go.mod" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/go.sum" beforeDir="false" afterPath="$PROJECT_DIR$/go.sum" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main.go" beforeDir="false" afterPath="$PROJECT_DIR$/main.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../egg_catcher4/db/db.go" beforeDir="false" afterPath="$PROJECT_DIR$/../egg_catcher4/db/db.go" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -53,7 +54,7 @@
     &quot;RunOnceActivity.go.modules.go.list.on.any.changes.was.set&quot;: &quot;true&quot;,
     &quot;git-widget-placeholder&quot;: &quot;main&quot;,
     &quot;go.import.settings.migrated&quot;: &quot;true&quot;,
-    &quot;last_opened_file_path&quot;: &quot;C:/Users/user&quot;,
+    &quot;last_opened_file_path&quot;: &quot;C:/Users/user/GolandProjects/egg_catcher2&quot;,
     &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
     &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
     &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
