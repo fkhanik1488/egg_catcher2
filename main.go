@@ -26,17 +26,28 @@ const (
 	screenHeight = 600
 	wolfWidth    = 50
 	wolfHeight   = 50
-	basketWidth  = 80
-	basketHeight = 20
-	henWidth     = 40
-	henHeight    = 40
-	eggSize      = 10
-	heartSize    = 20
+	basketWidth  = 80 // Increased to expand right
+	basketHeight = 60 // Reduced to upper rectangle
+	henWidth     = 38 // Increased from 40 to 48
+	henHeight    = 38 // Increased from 40 to 48
+	eggSize      = 14 // Updated to match width of new egg textures (14x16)
+	heartSize    = 30 // Increased to 30 for wider hearts
 	buttonWidth  = 200
 	buttonHeight = 50
 )
 
-var db *sql.DB
+var (
+	db                *sql.DB
+	imgBackgroundMenu *ebiten.Image // Background for auth and Game Over screen
+	imgBackgroundMain *ebiten.Image // Background for game screen
+	imgHen            *ebiten.Image // Sprite for hens
+	imgWolf           *ebiten.Image // Sprite for wolf (replaces basket)
+	imgHeart1         *ebiten.Image // Sprite for full heart
+	imgHeart2         *ebiten.Image // Sprite for gray (lost) heart
+	imgFakeEgg        *ebiten.Image // Sprite for fake egg
+	imgGoldEgg        *ebiten.Image // Sprite for gold egg
+	imgWhiteEgg       *ebiten.Image // Sprite for white egg
+)
 
 type Game struct {
 	wolfX, wolfY      float64
@@ -56,6 +67,8 @@ type Game struct {
 	loseHeartPlayer   *audio.Player
 	gainHeartPlayer   *audio.Player
 	scoreHeartPlayer  *audio.Player
+	isMoving          bool // Сохраняем флаг для предотвращения телепортации
+	isPaused          bool // Флаг паузы
 }
 
 type Hen struct {
@@ -115,7 +128,7 @@ func NewGame(playerID int, loseHeartPlayer, gainHeartPlayer, scoreHeartPlayer *a
 	g := &Game{
 		wolfX:            screenWidth/2 - wolfWidth/2,
 		wolfY:            screenHeight - wolfHeight - 20,
-		basketY:          screenHeight - wolfHeight - basketHeight - 10,
+		basketY:          460,
 		level:            1,
 		score:            0,
 		record:           0,
@@ -126,12 +139,14 @@ func NewGame(playerID int, loseHeartPlayer, gainHeartPlayer, scoreHeartPlayer *a
 		loseHeartPlayer:  loseHeartPlayer,
 		gainHeartPlayer:  gainHeartPlayer,
 		scoreHeartPlayer: scoreHeartPlayer,
+		isMoving:         false,
+		isPaused:         false,
 	}
 	loadPlayerData(g)
-	g.hens[0] = Hen{x: 150, y: 50}
-	g.hens[1] = Hen{x: 100, y: 100}
-	g.hens[2] = Hen{x: 650, y: 50}
-	g.hens[3] = Hen{x: 700, y: 100}
+	g.hens[0] = Hen{x: 150, y: 58}
+	g.hens[1] = Hen{x: 100, y: 108}
+	g.hens[2] = Hen{x: 650, y: 58}
+	g.hens[3] = Hen{x: 700, y: 108}
 	g.replayButton = Button{
 		x:     screenWidth/3 - buttonWidth - 10,
 		y:     screenHeight/3 + 20,
@@ -160,32 +175,26 @@ func (g *Game) spawnEgg() {
 	probability := rand.Float64()
 	var valueEgg int
 	if probability < 0.1 {
-		valueEgg = 0
+		valueEgg = 0 // fake_egg
 	} else if probability < 0.15 {
-		valueEgg = 1
+		valueEgg = 1 // white_egg
 	} else {
-		valueEgg = 2
+		valueEgg = 2 // gold_egg
 	}
 	henIndex := rand.Intn(4)
 	eggX := g.hens[henIndex].x + henWidth/2 - eggSize/2
 	vx, transitionX := 0.0, 0.0
-	baseSpeed := 1.0 + 0.3*float64(g.level-1)
+	baseSpeed := 1.0 + 1.0*float64(g.level-1)
 	if eggX < screenWidth/2 {
 		vx = baseSpeed / math.Sqrt(2)
 		transitionX = eggX + 67.5
 	} else {
 		vx = -baseSpeed / math.Sqrt(2)
-		transitionX = eggX - 82.5
-	}
-	var offset float64
-	if vx > 0 {
-		offset = -5
-	} else {
-		offset = -5
+		transitionX = eggX - 67.5
 	}
 	g.eggs = append(g.eggs, Egg{
 		x:           eggX,
-		y:           g.hens[henIndex].y + float64(henHeight) + offset,
+		y:           g.hens[henIndex].y + float64(henHeight),
 		vx:          vx,
 		vy:          baseSpeed / math.Sqrt(2),
 		phase:       "rolling",
@@ -498,7 +507,12 @@ func (a *AuthState) Update() error {
 }
 
 func (a *AuthState) Draw(screen *ebiten.Image) {
-	screen.Fill(color.RGBA{0, 128, 255, 255})
+	// Use background_menu.png for auth screen
+	if imgBackgroundMenu != nil {
+		screen.DrawImage(imgBackgroundMenu, nil)
+	} else {
+		screen.Fill(color.RGBA{0, 128, 255, 255})
+	}
 
 	textImg := ebiten.NewImage(screenWidth, screenHeight)
 	ebitenutil.DebugPrintAt(textImg, "Welcome to Egg Catcher: Wolf Edition!", screenWidth/3-100, screenHeight/3-100)
@@ -510,7 +524,7 @@ func (a *AuthState) Draw(screen *ebiten.Image) {
 		ebitenutil.DebugPrintAt(textImg, "Password: "+displayPassword+"_", screenWidth/3-50, screenHeight/3-20)
 	}
 	if a.errorMsg != "" {
-		ebitenutil.DebugPrintAt(textImg, "Error: "+a.errorMsg, screenWidth/3-70, screenHeight/3+10)
+		ebitenutil.DebugPrintAt(textImg, "Error: "+a.errorMsg, screenWidth/3-100, screenHeight/3-80)
 	}
 
 	if a.authPhase == "username" {
@@ -606,21 +620,37 @@ func (g *Game) Update() error {
 		return nil
 	}
 
+	if g.isPaused {
+		// Проверка выхода из паузы
+		if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
+			g.isPaused = false
+		}
+		return nil
+	}
+
+	// Переключение паузы
+	if inpututil.IsKeyJustPressed(ebiten.KeyP) {
+		g.isPaused = true
+		return nil
+	}
+
 	if g.score > 10*g.level && g.level < 20 {
 		g.level++
 	}
 
+	// Wolf moves left and right as originally
 	if ebiten.IsKeyPressed(ebiten.KeyA) && g.wolfX > 0 {
-		g.wolfX -= 5
-	}
-	if ebiten.IsKeyPressed(ebiten.KeyD) && g.wolfX < screenWidth-wolfWidth {
-		g.wolfX += 5
-	}
-	if ebiten.IsKeyPressed(ebiten.KeyW) && g.basketY > g.wolfY-basketHeight {
-		g.basketY -= 5
-	}
-	if ebiten.IsKeyPressed(ebiten.KeyS) && g.basketY < screenHeight-basketHeight {
-		g.basketY += 5
+		if !g.isMoving {
+			g.isMoving = true // Устанавливаем флаг начала движения
+		}
+		g.wolfX -= 5 // Оригинальное движение влево
+	} else if ebiten.IsKeyPressed(ebiten.KeyD) && g.wolfX < screenWidth-wolfWidth {
+		if !g.isMoving {
+			g.isMoving = true // Устанавливаем флаг начала движения
+		}
+		g.wolfX += 5 // Оригинальное движение вправо
+	} else {
+		g.isMoving = false // Сбрасываем флаг, если клавиши не нажаты
 	}
 
 	canDropEgg := true
@@ -720,9 +750,14 @@ func (g *Game) Update() error {
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
-	screen.Fill(color.RGBA{0, 128, 255, 255})
-
+	// Use background_menu.png for Game Over screen, background_main.png for active game
 	if g.gameOver {
+		if imgBackgroundMenu != nil {
+			screen.DrawImage(imgBackgroundMenu, nil)
+		} else {
+			screen.Fill(color.RGBA{0, 128, 255, 255})
+		}
+
 		saveGameData(g)
 		textImg := ebiten.NewImage(screenWidth, screenHeight)
 		ebitenutil.DebugPrintAt(textImg, "Game Over", screenWidth/3-50, screenHeight/3-100-70)
@@ -752,23 +787,55 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		return
 	}
 
-	ebitenutil.DrawRect(screen, g.wolfX, g.wolfY, wolfWidth, wolfHeight, color.RGBA{0, 255, 0, 255})
-	basketX := g.wolfX - basketWidth/2 + wolfWidth/2
-	ebitenutil.DrawRect(screen, basketX, g.basketY, basketWidth, basketHeight, color.RGBA{255, 0, 0, 255})
+	// Use background_main.png for active game
+	if imgBackgroundMain != nil {
+		screen.DrawImage(imgBackgroundMain, nil)
+	} else {
+		screen.Fill(color.RGBA{0, 128, 255, 255})
+	}
 
+	// Draw wolf sprite with scaling, raised to align basket top
+	basketX := float64(g.wolfX - basketWidth/2 + wolfWidth/2)
+	if imgWolf != nil {
+		op := &ebiten.DrawImageOptions{}
+		op.GeoM.Scale(2.0, 2.0)
+		op.GeoM.Translate(basketX, g.basketY-20)
+		screen.DrawImage(imgWolf, op)
+	} else {
+		ebitenutil.DrawRect(screen, basketX, g.basketY-20, float64(basketWidth), float64(basketHeight), color.RGBA{255, 0, 0, 255})
+	}
+
+	// Draw hens with sprite or fallback to yellow rectangles
 	for _, hen := range g.hens {
-		ebitenutil.DrawRect(screen, hen.x, hen.y, henWidth, henHeight, color.RGBA{255, 255, 0, 255})
+		if imgHen != nil {
+			op := &ebiten.DrawImageOptions{}
+			if hen.x < screenWidth/2 {
+				op.GeoM.Scale(-1, 1)
+				op.GeoM.Translate(hen.x+henWidth, hen.y+5)
+			} else {
+				op.GeoM.Translate(hen.x, hen.y+9)
+			}
+			screen.DrawImage(imgHen, op)
+		} else {
+			if hen.x < screenWidth/2 {
+				ebitenutil.DrawRect(screen, hen.x, hen.y+5, henWidth, henHeight, color.RGBA{255, 255, 0, 255})
+			} else {
+				ebitenutil.DrawRect(screen, hen.x, hen.y+9, henWidth, henHeight, color.RGBA{255, 255, 0, 255})
+			}
+		}
 	}
 
 	for _, hen := range g.hens {
-		startX := hen.x + henWidth/2 - eggSize/2
+		startX := hen.x + henWidth/2
 		startY := hen.y + henHeight
 		endX, endY := startX, startY
 		if startX < screenWidth/2 {
+			startY += 5
 			endX = startX + 67.5
 			endY = startY + 67.5
 		} else {
-			endX = startX - 82.5
+			startY += 10
+			endX = startX - 67.5
 			endY = startY + 67.5
 		}
 		length := math.Hypot(endX-startX, endY-startY)
@@ -777,39 +844,71 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		op := &ebiten.DrawImageOptions{}
 		op.GeoM.Translate(-5, -5)
 		op.GeoM.Rotate(math.Atan2(endY-startY, endX-startX))
-		op.GeoM.Translate(startX, startY)
+		op.GeoM.Translate(startX, startY+eggSize/2)
 		screen.DrawImage(tempImg, op)
 	}
 
+	// Draw eggs with realistic rolling and falling animation
 	for _, egg := range g.eggs {
 		if egg.active {
-			tempImg := ebiten.NewImage(int(eggSize), int(eggSize))
-			ebitenutil.DrawRect(tempImg, 0, 0, eggSize, eggSize, color.RGBA{0, 0, 0, 255})
-			if egg.value == 2 {
-				ebitenutil.DrawRect(tempImg, 1, 1, eggSize-2, eggSize-2, color.RGBA{255, 255, 255, 255})
-			} else if egg.value == 0 {
-				ebitenutil.DrawRect(tempImg, 1, 1, eggSize-2, eggSize-2, color.RGBA{150, 75, 0, 255})
+			var eggImg *ebiten.Image
+			switch egg.value {
+			case 0:
+				eggImg = imgFakeEgg
+			case 1:
+				eggImg = imgWhiteEgg
+			case 2:
+				eggImg = imgGoldEgg
+			}
+			if eggImg != nil {
+				op := &ebiten.DrawImageOptions{}
+				op.GeoM.Translate(-eggSize/2, -eggSize/2-3)
+				var angle float64
+				if egg.phase == "rolling" {
+					angle += egg.vx * 1.0
+				} else if egg.phase == "falling" {
+					angle += egg.vy * 1.0
+				}
+				angle = math.Mod(angle, 2*math.Pi)
+				op.GeoM.Rotate(angle)
+				op.GeoM.Translate(egg.x+eggSize/2, egg.y+eggSize/2)
+				screen.DrawImage(eggImg, op)
 			} else {
-				ebitenutil.DrawRect(tempImg, 1, 1, eggSize-2, eggSize-2, color.RGBA{255, 220, 0, 255})
+				tempImg := ebiten.NewImage(int(eggSize), int(eggSize))
+				ebitenutil.DrawRect(tempImg, 0, 0, eggSize, eggSize, color.RGBA{0, 0, 0, 255})
+				if egg.value == 2 {
+					ebitenutil.DrawRect(tempImg, 1, 1, eggSize-2, eggSize-2, color.RGBA{255, 255, 255, 255})
+				} else if egg.value == 0 {
+					ebitenutil.DrawRect(tempImg, 1, 1, eggSize-2, eggSize-2, color.RGBA{150, 75, 0, 255})
+				} else {
+					ebitenutil.DrawRect(tempImg, 1, 1, eggSize-2, eggSize-2, color.RGBA{255, 220, 0, 255})
+				}
+				op := &ebiten.DrawImageOptions{}
+				op.GeoM.Translate(-eggSize/2, -eggSize/2)
+				op.GeoM.Rotate(egg.y / 20 * 2 * math.Pi)
+				op.GeoM.Translate(egg.x+eggSize/2, egg.y+eggSize/2)
+				screen.DrawImage(tempImg, op)
 			}
-			op := &ebiten.DrawImageOptions{}
-			op.GeoM.Translate(-eggSize/2, -eggSize/2)
-			op.GeoM.Rotate(egg.y / 20 * 2 * math.Pi)
-			yOffset := 0.0
-			if egg.phase == "rolling" {
-				yOffset = -4
-			}
-			op.GeoM.Translate(egg.x+eggSize/2, egg.y+eggSize/2+yOffset)
-			screen.DrawImage(tempImg, op)
 		}
 	}
 
+	// Draw hearts with separate sprites, positioned max right
 	for i := 0; i < 3; i++ {
-		heartColor := color.RGBA{255, 0, 0, 255}
-		if i >= g.lives {
-			heartColor = color.RGBA{128, 128, 128, 255}
+		op := &ebiten.DrawImageOptions{}
+		op.GeoM.Translate(640.0+float64(i*55), -10.0)
+		if imgHeart1 != nil && imgHeart2 != nil {
+			if i < g.lives {
+				screen.DrawImage(imgHeart1, op)
+			} else {
+				screen.DrawImage(imgHeart2, op)
+			}
+		} else {
+			heartColor := color.RGBA{255, 0, 0, 255}
+			if i >= g.lives {
+				heartColor = color.RGBA{128, 128, 128, 255}
+			}
+			ebitenutil.DrawRect(screen, 600.0+float64(i*50), 0.0, heartSize, heartSize, heartColor)
 		}
-		ebitenutil.DrawRect(screen, float64(screenWidth-100+i*30), 20, heartSize, heartSize, heartColor)
 	}
 
 	textImg := ebiten.NewImage(screenWidth, screenHeight)
@@ -818,6 +917,15 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	op.GeoM.Scale(1.5, 1.5)
 	op.GeoM.Translate(10, 10)
 	screen.DrawImage(textImg, op)
+
+	// Отображение паузы поверх всех элементов
+	if g.isPaused {
+		pauseTextImg := ebiten.NewImage(screenWidth, screenHeight)
+		pauseOp := &ebiten.DrawImageOptions{}
+		pauseOp.GeoM.Scale(3.0, 3.0) // Увеличение надписи для большей видимости
+		pauseOp.GeoM.Translate(float64(screenWidth/2-150), float64(screenHeight/2-60))
+		screen.DrawImage(pauseTextImg, pauseOp)
+	}
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
@@ -851,6 +959,48 @@ func main() {
 
 	rand.Seed(time.Now().UnixNano())
 	audioContext := audio.NewContext(44100)
+
+	// Load background and hen images
+	var err error
+	imgBackgroundMenu, _, err = ebitenutil.NewImageFromFile("assets/background_menu.png")
+	if err != nil {
+		log.Printf("Error loading background_menu.png: %v", err)
+	}
+	imgBackgroundMain, _, err = ebitenutil.NewImageFromFile("assets/background_main.png")
+	if err != nil {
+		log.Printf("Error loading background_main.png: %v", err)
+	}
+	imgHen, _, err = ebitenutil.NewImageFromFile("assets/hen.png")
+	if err != nil {
+		log.Printf("Error loading hen.png: %v", err)
+	}
+	// Load wolf sprite
+	imgWolf, _, err = ebitenutil.NewImageFromFile("assets/wolf.png")
+	if err != nil {
+		log.Printf("Error loading wolf.png: %v", err)
+	}
+	// Load egg sprites
+	imgFakeEgg, _, err = ebitenutil.NewImageFromFile("assets/fake_egg.png")
+	if err != nil {
+		log.Printf("Error loading fake_egg.png: %v", err)
+	}
+	imgWhiteEgg, _, err = ebitenutil.NewImageFromFile("assets/white_egg.png")
+	if err != nil {
+		log.Printf("Error loading white_egg.png: %v", err)
+	}
+	imgGoldEgg, _, err = ebitenutil.NewImageFromFile("assets/gold_egg.png")
+	if err != nil {
+		log.Printf("Error loading gold_egg.png: %v", err)
+	}
+	// Load heart sprites
+	imgHeart1, _, err = ebitenutil.NewImageFromFile("assets/heart1.png")
+	if err != nil {
+		log.Printf("Error loading heart1.png: %v", err)
+	}
+	imgHeart2, _, err = ebitenutil.NewImageFromFile("assets/heart2.png")
+	if err != nil {
+		log.Printf("Error loading heart2.png: %v", err)
+	}
 
 	mp3File, err := os.Open("converted_new_music.mp3")
 	if err != nil {
