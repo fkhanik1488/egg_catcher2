@@ -14,9 +14,6 @@
       <change afterPath="$PROJECT_DIR$/../egg_catcher3/pkg/graphics/assets.go" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/../egg_catcher3/pkg/graphics/renderer.go" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/bin/gain_heart.mp3" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/bin/lose_heart.mp3" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/bin/score_heart.mp3" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
