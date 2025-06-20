@@ -9,6 +9,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/audio/mp3"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
+	_ "github.com/lib/pq" // PostgreSQL driver
 	_ "github.com/mattn/go-sqlite3"
 	"golang.org/x/crypto/bcrypt"
 	"image/color"
@@ -205,31 +206,39 @@ func (g *Game) spawnEgg() {
 }
 
 func initDB() (*sql.DB, error) {
-	db, err := sql.Open("sqlite3", "egg_catcher.db")
+	// Зашитая строка подключения
+	dbURL := "postgres://eggcatcher:fimoz@185.207.1.110:5432/egg_catcher?sslmode=disable"
+	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %v", err)
 	}
+	// Проверка подключения
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("failed to ping database: %v", err)
+	}
+	// Создание таблицы players
 	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS players (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL UNIQUE,
-			high_score INTEGER DEFAULT 0,
-			password TEXT NOT NULL
-		)
-	`)
+        CREATE TABLE IF NOT EXISTS players (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            high_score INTEGER DEFAULT 0,
+            password TEXT NOT NULL
+        )
+    `)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create players table: %v", err)
 	}
+	// Создание таблицы games
 	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS games (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			player_id INTEGER NOT NULL,
-			score INTEGER NOT NULL,
-			lives INTEGER NOT NULL,
-			date DATETIME DEFAULT CURRENT_TIMESTAMP,
-			FOREIGN KEY (player_id) REFERENCES players(id)
-		)
-	`)
+        CREATE TABLE IF NOT EXISTS games (
+            id SERIAL PRIMARY KEY,
+            player_id INTEGER NOT NULL,
+            score INTEGER NOT NULL,
+            lives INTEGER NOT NULL,
+            date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+        )
+    `)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create games table: %v", err)
 	}
@@ -948,11 +957,11 @@ func (g *Game) drawButton(screen *ebiten.Image, b *Button) {
 }
 
 func clearDatabase(db *sql.DB) error {
-	_, err := db.Exec("DELETE FROM games")
+	_, err := db.Exec("TRUNCATE TABLE games RESTART IDENTITY CASCADE")
 	if err != nil {
 		return fmt.Errorf("failed to clear games table: %v", err)
 	}
-	_, err = db.Exec("DELETE FROM players")
+	_, err = db.Exec("TRUNCATE TABLE players RESTART IDENTITY")
 	if err != nil {
 		return fmt.Errorf("failed to clear players table: %v", err)
 	}
