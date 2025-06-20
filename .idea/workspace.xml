@@ -5,6 +5,7 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="3069c0a6-c46a-479f-8df5-8c26747115a4" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/Makefile" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/../egg_catcher3/cmd/main.go" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/../egg_catcher3/constants/constants.go" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/../egg_catcher3/internal/auth/auth.go" afterDir="false" />
@@ -15,7 +16,7 @@
       <change afterPath="$PROJECT_DIR$/../egg_catcher3/pkg/graphics/renderer.go" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/egg_catcher.db" beforeDir="false" afterPath="$PROJECT_DIR$/egg_catcher.db" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/../egg_catcher4/db/db.go" beforeDir="false" afterPath="$PROJECT_DIR$/../egg_catcher4/db/db.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main.go" beforeDir="false" afterPath="$PROJECT_DIR$/main.go" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />

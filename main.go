@@ -12,7 +12,6 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"golang.org/x/crypto/bcrypt"
 	"image/color"
-	_ "io"
 	"log"
 	"math"
 	"math/rand"
@@ -47,6 +46,7 @@ var (
 	imgFakeEgg        *ebiten.Image // Sprite for fake egg
 	imgGoldEgg        *ebiten.Image // Sprite for gold egg
 	imgWhiteEgg       *ebiten.Image // Sprite for white egg
+	player            *audio.Player // Глобальная переменная для управления музыкой
 )
 
 type Game struct {
@@ -624,6 +624,9 @@ func (g *Game) Update() error {
 		// Проверка выхода из паузы
 		if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
 			g.isPaused = false
+			if player != nil {
+				player.Play() // Возобновление музыки с текущей позиции
+			}
 		}
 		return nil
 	}
@@ -631,6 +634,9 @@ func (g *Game) Update() error {
 	// Переключение паузы
 	if inpututil.IsKeyJustPressed(ebiten.KeyP) {
 		g.isPaused = true
+		if player != nil {
+			player.Pause() // Остановка музыки
+		}
 		return nil
 	}
 
@@ -641,16 +647,16 @@ func (g *Game) Update() error {
 	// Wolf moves left and right as originally
 	if ebiten.IsKeyPressed(ebiten.KeyA) && g.wolfX > 0 {
 		if !g.isMoving {
-			g.isMoving = true // Устанавливаем флаг начала движения
+			g.isMoving = true
 		}
-		g.wolfX -= 5 // Оригинальное движение влево
+		g.wolfX -= 5
 	} else if ebiten.IsKeyPressed(ebiten.KeyD) && g.wolfX < screenWidth-wolfWidth {
 		if !g.isMoving {
-			g.isMoving = true // Устанавливаем флаг начала движения
+			g.isMoving = true
 		}
-		g.wolfX += 5 // Оригинальное движение вправо
+		g.wolfX += 5
 	} else {
-		g.isMoving = false // Сбрасываем флаг, если клавиши не нажаты
+		g.isMoving = false
 	}
 
 	canDropEgg := true
@@ -667,7 +673,7 @@ func (g *Game) Update() error {
 	for i := range g.eggs {
 		if g.eggs[i].active {
 			if g.eggs[i].phase == "rolling" {
-				accel := 0.03 + 0.01*float64(g.level)
+				accel := 0.03 + 0.03*float64(g.level)
 				if g.eggs[i].vx > 0 {
 					g.eggs[i].vx += accel / math.Sqrt(2)
 					g.eggs[i].vy += accel / math.Sqrt(2)
@@ -1002,20 +1008,20 @@ func main() {
 		log.Printf("Error loading heart2.png: %v", err)
 	}
 
-	mp3File, err := os.Open("converted_new_music.mp3")
+	mp3File, err := os.Open("assets/converted_new_music.mp3")
 	if err != nil {
-		log.Fatal("Error opening converted_new_music.mp3: %v", err)
+		log.Fatalf("Error opening converted_new_music.mp3: %v", err)
 	}
 	defer mp3File.Close()
 	if mp3File != nil {
 		mp3Stream, err := mp3.DecodeWithSampleRate(44100, mp3File)
 		if err != nil {
-			log.Fatal("Error decoding converted_new_music.mp3: %v", err)
+			log.Fatalf("Error decoding converted_new_music.mp3: %v", err)
 		}
 		if mp3Stream != nil {
-			player, err := audioContext.NewPlayer(audio.NewInfiniteLoop(mp3Stream, mp3Stream.Length()))
+			player, err = audioContext.NewPlayer(audio.NewInfiniteLoop(mp3Stream, mp3Stream.Length()))
 			if err != nil {
-				log.Fatal("Error creating background music player: %v", err)
+				log.Fatalf("Error creating background music player: %v", err)
 			}
 			if player != nil {
 				player.SetVolume(1.0)
@@ -1024,7 +1030,7 @@ func main() {
 		}
 	}
 
-	loseHeartFile, err := os.Open("lose_heart.mp3")
+	loseHeartFile, err := os.Open("assets/lose_heart.mp3")
 	if err != nil {
 		// No logging
 	}
@@ -1032,21 +1038,15 @@ func main() {
 	if loseHeartFile != nil {
 		defer loseHeartFile.Close()
 		loseHeartStream, err := mp3.DecodeWithSampleRate(44100, loseHeartFile)
-		if err != nil {
-			// No logging
-		}
-		if loseHeartStream != nil {
+		if err == nil {
 			loseHeartPlayer, err = audioContext.NewPlayer(loseHeartStream)
-			if err != nil {
-				// No logging
-			}
-			if loseHeartPlayer != nil {
+			if err == nil && loseHeartPlayer != nil {
 				loseHeartPlayer.SetVolume(1.0)
 			}
 		}
 	}
 
-	gainHeartFile, err := os.Open("gain_heart.mp3")
+	gainHeartFile, err := os.Open("assets/gain_heart.mp3")
 	if err != nil {
 		// No logging
 	}
@@ -1054,21 +1054,15 @@ func main() {
 	if gainHeartFile != nil {
 		defer gainHeartFile.Close()
 		gainHeartStream, err := mp3.DecodeWithSampleRate(44100, gainHeartFile)
-		if err != nil {
-			// No logging
-		}
-		if gainHeartStream != nil {
+		if err == nil {
 			gainHeartPlayer, err = audioContext.NewPlayer(gainHeartStream)
-			if err != nil {
-				// No logging
-			}
-			if gainHeartPlayer != nil {
+			if err == nil && gainHeartPlayer != nil {
 				gainHeartPlayer.SetVolume(1.0)
 			}
 		}
 	}
 
-	scoreHeartFile, err := os.Open("score_heart.mp3")
+	scoreHeartFile, err := os.Open("assets/score_heart.mp3")
 	if err != nil {
 		// No logging
 	}
@@ -1076,15 +1070,9 @@ func main() {
 	if scoreHeartFile != nil {
 		defer scoreHeartFile.Close()
 		scoreHeartStream, err := mp3.DecodeWithSampleRate(44100, scoreHeartFile)
-		if err != nil {
-			// No logging
-		}
-		if scoreHeartStream != nil {
+		if err == nil {
 			scoreHeartPlayer, err = audioContext.NewPlayer(scoreHeartStream)
-			if err != nil {
-				// No logging
-			}
-			if scoreHeartPlayer != nil {
+			if err == nil && scoreHeartPlayer != nil {
 				scoreHeartPlayer.SetVolume(1.5)
 			}
 		}
