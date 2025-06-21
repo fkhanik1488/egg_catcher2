@@ -269,17 +269,13 @@ func authenticate(db *sql.DB, username, password string, isRegister bool) (int, 
 		if err != nil {
 			return 0, fmt.Errorf("failed to hash password: %v", err)
 		}
-		result, err := db.Exec("INSERT INTO players (name, high_score, password) VALUES ($1, 0, $2)", username, string(hashedPassword))
+		// Используем RETURNING id для получения ID новой записи
+		err = db.QueryRow("INSERT INTO players (name, high_score, password) VALUES ($1, 0, $2) RETURNING id", username, string(hashedPassword)).Scan(&playerID)
 		if err != nil {
 			log.Printf("Failed to insert new player '%s': %v", username, err)
 			return 0, fmt.Errorf("failed to insert new player: %v", err)
 		}
-		playerID64, err := result.LastInsertId()
-		if err != nil {
-			log.Printf("Failed to get new player ID for '%s': %v", username, err)
-			return 0, fmt.Errorf("failed to get new player ID: %v", err)
-		}
-		playerID = int(playerID64)
+		log.Printf("Successfully registered new player '%s' with ID %d", username, playerID)
 		return playerID, nil
 	}
 
@@ -294,6 +290,7 @@ func authenticate(db *sql.DB, username, password string, isRegister bool) (int, 
 	if err := bcrypt.CompareHashAndPassword([]byte(storedPassword), []byte(password)); err != nil {
 		return 0, fmt.Errorf("incorrect password")
 	}
+	log.Printf("Successfully authenticated player '%s' with ID %d", username, playerID)
 	return playerID, nil
 }
 
