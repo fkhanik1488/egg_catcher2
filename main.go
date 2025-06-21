@@ -255,8 +255,9 @@ func authenticate(db *sql.DB, username, password string, isRegister bool) (int, 
 	var playerID int
 	var exists int
 	var storedPassword string
-	err := db.QueryRow("SELECT COUNT(*) FROM players WHERE name = ?", username).Scan(&exists)
+	err := db.QueryRow("SELECT COUNT(*) FROM players WHERE name = $1", username).Scan(&exists)
 	if err != nil {
+		log.Printf("Failed to check user existence for username '%s': %v", username, err)
 		return 0, fmt.Errorf("failed to check user existence: %v", err)
 	}
 
@@ -268,12 +269,14 @@ func authenticate(db *sql.DB, username, password string, isRegister bool) (int, 
 		if err != nil {
 			return 0, fmt.Errorf("failed to hash password: %v", err)
 		}
-		result, err := db.Exec("INSERT INTO players (name, high_score, password) VALUES (?, 0, ?)", username, string(hashedPassword))
+		result, err := db.Exec("INSERT INTO players (name, high_score, password) VALUES ($1, 0, $2)", username, string(hashedPassword))
 		if err != nil {
+			log.Printf("Failed to insert new player '%s': %v", username, err)
 			return 0, fmt.Errorf("failed to insert new player: %v", err)
 		}
 		playerID64, err := result.LastInsertId()
 		if err != nil {
+			log.Printf("Failed to get new player ID for '%s': %v", username, err)
 			return 0, fmt.Errorf("failed to get new player ID: %v", err)
 		}
 		playerID = int(playerID64)
@@ -283,8 +286,9 @@ func authenticate(db *sql.DB, username, password string, isRegister bool) (int, 
 	if exists == 0 {
 		return 0, fmt.Errorf("user does not exist")
 	}
-	err = db.QueryRow("SELECT id, password FROM players WHERE name = ?", username).Scan(&playerID, &storedPassword)
+	err = db.QueryRow("SELECT id, password FROM players WHERE name = $1", username).Scan(&playerID, &storedPassword)
 	if err != nil {
+		log.Printf("Failed to get player data for '%s': %v", username, err)
 		return 0, fmt.Errorf("failed to get player data: %v", err)
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(storedPassword), []byte(password)); err != nil {
@@ -298,10 +302,10 @@ func loadPlayerData(g *Game) {
 		return
 	}
 	var player Player
-	err := db.QueryRow("SELECT id, name, high_score FROM players WHERE id = ?", g.playerID).Scan(&player.ID, &player.Name, &player.HighScore)
+	err := db.QueryRow("SELECT id, name, high_score FROM players WHERE id = $1", g.playerID).Scan(&player.ID, &player.Name, &player.HighScore)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			_, err = db.Exec("INSERT INTO players (name, high_score, password) VALUES (?, 0, ?)", "Player1", "")
+			_, err = db.Exec("INSERT INTO players (name, high_score, password) VALUES ($1, 0, $2)", "Player1", "")
 			if err != nil {
 				log.Printf("Error creating default player: %v", err)
 				return
@@ -309,7 +313,7 @@ func loadPlayerData(g *Game) {
 			g.score = 0
 			g.record = 0
 		} else {
-			log.Printf("Error loading player data: %v", err)
+			log.Printf("Error loading player data for ID %d: %v", g.playerID, err)
 			return
 		}
 	} else {
@@ -321,18 +325,21 @@ func saveGameData(g *Game) error {
 	if db == nil {
 		return fmt.Errorf("database not initialized")
 	}
-	_, err := db.Exec("INSERT INTO games (player_id, score, lives) VALUES (?, ?, ?)", g.playerID, g.score, g.lives)
+	_, err := db.Exec("INSERT INTO games (player_id, score, lives) VALUES ($1, $2, $3)", g.playerID, g.score, g.lives)
 	if err != nil {
+		log.Printf("Failed to save game data for player ID %d: %v", g.playerID, err)
 		return fmt.Errorf("failed to save game data: %v", err)
 	}
 	var currentHighScore int
-	err = db.QueryRow("SELECT high_score FROM players WHERE id = ?", g.playerID).Scan(&currentHighScore)
+	err = db.QueryRow("SELECT high_score FROM players WHERE id = $1", g.playerID).Scan(&currentHighScore)
 	if err != nil {
+		log.Printf("Failed to get current high score for player ID %d: %v", g.playerID, err)
 		return fmt.Errorf("failed to get current high score: %v", err)
 	}
 	if g.score > currentHighScore {
-		_, err = db.Exec("UPDATE players SET high_score = ? WHERE id = ?", g.score, g.playerID)
+		_, err = db.Exec("UPDATE players SET high_score = $1 WHERE id = $2", g.score, g.playerID)
 		if err != nil {
+			log.Printf("Failed to update high score for player ID %d: %v", g.playerID, err)
 			return fmt.Errorf("failed to update high score: %v", err)
 		}
 		g.record = g.score
@@ -410,8 +417,9 @@ func (a *AuthState) Update() error {
 		} else if a.submitButton.hovered {
 			if a.authPhase == "username" && !a.isRegister {
 				var exists int
-				err := a.db.QueryRow("SELECT COUNT(*) FROM players WHERE name = ?", strings.TrimSpace(a.username)).Scan(&exists)
+				err := a.db.QueryRow("SELECT COUNT(*) FROM players WHERE name = $1", strings.TrimSpace(a.username)).Scan(&exists)
 				if err != nil {
+					log.Printf("Failed to check username '%s': %v", strings.TrimSpace(a.username), err)
 					a.errorMsg = "Failed to check username"
 				} else if exists == 0 {
 					a.errorMsg = "User does not exist"
@@ -451,8 +459,9 @@ func (a *AuthState) Update() error {
 	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
 		if a.authPhase == "username" && !a.isRegister {
 			var exists int
-			err := a.db.QueryRow("SELECT COUNT(*) FROM players WHERE name = ?", strings.TrimSpace(a.username)).Scan(&exists)
+			err := a.db.QueryRow("SELECT COUNT(*) FROM players WHERE name = $1", strings.TrimSpace(a.username)).Scan(&exists)
 			if err != nil {
+				log.Printf("Failed to check username '%s': %v", strings.TrimSpace(a.username), err)
 				a.errorMsg = "Failed to check username"
 			} else if exists == 0 {
 				a.errorMsg = "User does not exist"
@@ -484,8 +493,9 @@ func (a *AuthState) Update() error {
 					a.errorMsg = "Username cannot be empty"
 				} else {
 					var exists int
-					err := a.db.QueryRow("SELECT COUNT(*) FROM players WHERE name = ?", strings.TrimSpace(a.username)).Scan(&exists)
+					err := a.db.QueryRow("SELECT COUNT(*) FROM players WHERE name = $1", strings.TrimSpace(a.username)).Scan(&exists)
 					if err != nil {
+						log.Printf("Failed to check username '%s': %v", strings.TrimSpace(a.username), err)
 						a.errorMsg = "Failed to check username"
 					} else if exists > 0 {
 						a.errorMsg = "Username already taken"
@@ -977,47 +987,47 @@ func main() {
 
 	// Load background and hen images
 	var err error
-	imgBackgroundMenu, _, err = ebitenutil.NewImageFromFile("assets/background_menu.png")
+	imgBackgroundMenu, _, err = ebitenutil.NewImageFromFile("avi/background_menu.png")
 	if err != nil {
 		log.Printf("Error loading background_menu.png: %v", err)
 	}
-	imgBackgroundMain, _, err = ebitenutil.NewImageFromFile("assets/background_main.png")
+	imgBackgroundMain, _, err = ebitenutil.NewImageFromFile("avi/background_main.png")
 	if err != nil {
 		log.Printf("Error loading background_main.png: %v", err)
 	}
-	imgHen, _, err = ebitenutil.NewImageFromFile("assets/hen.png")
+	imgHen, _, err = ebitenutil.NewImageFromFile("avi/hen.png")
 	if err != nil {
 		log.Printf("Error loading hen.png: %v", err)
 	}
 	// Load wolf sprite
-	imgWolf, _, err = ebitenutil.NewImageFromFile("assets/wolf.png")
+	imgWolf, _, err = ebitenutil.NewImageFromFile("avi/wolf.png")
 	if err != nil {
 		log.Printf("Error loading wolf.png: %v", err)
 	}
 	// Load egg sprites
-	imgFakeEgg, _, err = ebitenutil.NewImageFromFile("assets/fake_egg.png")
+	imgFakeEgg, _, err = ebitenutil.NewImageFromFile("avi/fake_egg.png")
 	if err != nil {
 		log.Printf("Error loading fake_egg.png: %v", err)
 	}
-	imgWhiteEgg, _, err = ebitenutil.NewImageFromFile("assets/white_egg.png")
+	imgWhiteEgg, _, err = ebitenutil.NewImageFromFile("avi/white_egg.png")
 	if err != nil {
 		log.Printf("Error loading white_egg.png: %v", err)
 	}
-	imgGoldEgg, _, err = ebitenutil.NewImageFromFile("assets/gold_egg.png")
+	imgGoldEgg, _, err = ebitenutil.NewImageFromFile("avi/gold_egg.png")
 	if err != nil {
 		log.Printf("Error loading gold_egg.png: %v", err)
 	}
 	// Load heart sprites
-	imgHeart1, _, err = ebitenutil.NewImageFromFile("assets/heart1.png")
+	imgHeart1, _, err = ebitenutil.NewImageFromFile("avi/heart1.png")
 	if err != nil {
 		log.Printf("Error loading heart1.png: %v", err)
 	}
-	imgHeart2, _, err = ebitenutil.NewImageFromFile("assets/heart2.png")
+	imgHeart2, _, err = ebitenutil.NewImageFromFile("avi/heart2.png")
 	if err != nil {
 		log.Printf("Error loading heart2.png: %v", err)
 	}
 
-	mp3File, err := os.Open("assets/converted_new_music.mp3")
+	mp3File, err := os.Open("music/converted_new_music.mp3")
 	if err != nil {
 		log.Fatalf("Error opening converted_new_music.mp3: %v", err)
 	}
@@ -1039,7 +1049,7 @@ func main() {
 		}
 	}
 
-	loseHeartFile, err := os.Open("assets/lose_heart.mp3")
+	loseHeartFile, err := os.Open("music/lose_heart.mp3")
 	if err != nil {
 		// No logging
 	}
@@ -1055,7 +1065,7 @@ func main() {
 		}
 	}
 
-	gainHeartFile, err := os.Open("assets/gain_heart.mp3")
+	gainHeartFile, err := os.Open("music/gain_heart.mp3")
 	if err != nil {
 		// No logging
 	}
@@ -1071,7 +1081,7 @@ func main() {
 		}
 	}
 
-	scoreHeartFile, err := os.Open("assets/score_heart.mp3")
+	scoreHeartFile, err := os.Open("music/score_heart.mp3")
 	if err != nil {
 		// No logging
 	}
