@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
+	"embed"
 	"flag"
 	"fmt"
 	"github.com/hajimehoshi/ebiten/v2"
@@ -10,16 +12,26 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	_ "github.com/lib/pq" // PostgreSQL driver
-	_ "github.com/mattn/go-sqlite3"
 	"golang.org/x/crypto/bcrypt"
+
 	"image/color"
+	_ "image/png"
+	"io"
 	"log"
 	"math"
 	"math/rand"
 	"os"
 	"strings"
 	"time"
+
+	_ "embed"
 )
+
+//go:embed avi/*.png
+var imageFiles embed.FS
+
+//go:embed music/*.mp3
+var audioFiles embed.FS
 
 const (
 	screenWidth  = 800
@@ -38,16 +50,17 @@ const (
 
 var (
 	db                *sql.DB
-	imgBackgroundMenu *ebiten.Image // Background for auth and Game Over screen
-	imgBackgroundMain *ebiten.Image // Background for game screen
-	imgHen            *ebiten.Image // Sprite for hens
-	imgWolf           *ebiten.Image // Sprite for wolf (replaces basket)
-	imgHeart1         *ebiten.Image // Sprite for full heart
-	imgHeart2         *ebiten.Image // Sprite for gray (lost) heart
-	imgFakeEgg        *ebiten.Image // Sprite for fake egg
-	imgGoldEgg        *ebiten.Image // Sprite for gold egg
-	imgWhiteEgg       *ebiten.Image // Sprite for white egg
-	player            *audio.Player // Глобальная переменная для управления музыкой
+	audioContext      *audio.Context // Глобальная переменная для аудио-контекста
+	imgBackgroundMenu *ebiten.Image  // Background for auth and Game Over screen
+	imgBackgroundMain *ebiten.Image  // Background for game screen
+	imgHen            *ebiten.Image  // Sprite for hens
+	imgWolf           *ebiten.Image  // Sprite for wolf (replaces basket)
+	imgHeart1         *ebiten.Image  // Sprite for full heart
+	imgHeart2         *ebiten.Image  // Sprite for gray (lost) heart
+	imgFakeEgg        *ebiten.Image  // Sprite for fake egg
+	imgGoldEgg        *ebiten.Image  // Sprite for gold egg
+	imgWhiteEgg       *ebiten.Image  // Sprite for white egg
+	player            *audio.Player  // Глобальная переменная для управления музыкой
 )
 
 type Game struct {
@@ -328,7 +341,7 @@ func saveGameData(g *Game) error {
 		return fmt.Errorf("failed to save game data: %v", err)
 	}
 	var currentHighScore int
-	err = db.QueryRow("SELECT high_score FROM players WHERE id = $1", g.playerID).Scan(&currentHighScore)
+	err = db.QueryRow("SELECT high_score FROM players WHERE id = $1", g.playerID).Scan(&currentHighScore) // Fix: Use &currentHighScore
 	if err != nil {
 		log.Printf("Failed to get current high score for player ID %d: %v", g.playerID, err)
 		return fmt.Errorf("failed to get current high score: %v", err)
@@ -975,123 +988,116 @@ func clearDatabase(db *sql.DB) error {
 	return nil
 }
 
+func loadImage(path string) (*ebiten.Image, error) {
+	file, err := imageFiles.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("error opening embedded %s: %v", path, err)
+	}
+	defer file.Close()
+	img, _, err := ebitenutil.NewImageFromReader(file)
+	if err != nil {
+		return nil, fmt.Errorf("error loading embedded %s: %v", path, err)
+	}
+	return img, nil
+}
+
+func loadAudio(path string) (*audio.Player, error) {
+	file, err := audioFiles.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("error opening embedded %s: %v", path, err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("error reading embedded %s: %v", path, err)
+	}
+	mp3Stream, err := mp3.DecodeWithSampleRate(44100, bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("error decoding embedded %s: %v", path, err)
+	}
+	player, err := audioContext.NewPlayer(mp3Stream) // Используем глобальный audioContext
+	if err != nil {
+		return nil, fmt.Errorf("error creating player for %s: %v", path, err)
+	}
+	return player, nil
+}
+
 func main() {
 	clear := flag.Bool("clear", false, "Clear all database data")
 	flag.Parse()
 
 	rand.Seed(time.Now().UnixNano())
-	audioContext := audio.NewContext(44100)
+	audioContext = audio.NewContext(44100) // Инициализация глобального аудио-контекста
 
 	// Load background and hen images
 	var err error
-	imgBackgroundMenu, _, err = ebitenutil.NewImageFromFile("avi/background_menu.png")
+	imgBackgroundMenu, err = loadImage("avi/background_menu.png")
 	if err != nil {
-		log.Printf("Error loading background_menu.png: %v", err)
+		log.Printf("Error: %v", err)
 	}
-	imgBackgroundMain, _, err = ebitenutil.NewImageFromFile("avi/background_main.png")
+	imgBackgroundMain, err = loadImage("avi/background_main.png")
 	if err != nil {
-		log.Printf("Error loading background_main.png: %v", err)
+		log.Printf("Error: %v", err)
 	}
-	imgHen, _, err = ebitenutil.NewImageFromFile("avi/hen.png")
+	imgHen, err = loadImage("avi/hen.png")
 	if err != nil {
-		log.Printf("Error loading hen.png: %v", err)
+		log.Printf("Error: %v", err)
 	}
-	// Load wolf sprite
-	imgWolf, _, err = ebitenutil.NewImageFromFile("avi/wolf.png")
+	imgWolf, err = loadImage("avi/wolf.png")
 	if err != nil {
-		log.Printf("Error loading wolf.png: %v", err)
+		log.Printf("Error: %v", err)
 	}
-	// Load egg sprites
-	imgFakeEgg, _, err = ebitenutil.NewImageFromFile("avi/fake_egg.png")
+	imgFakeEgg, err = loadImage("avi/fake_egg.png")
 	if err != nil {
-		log.Printf("Error loading fake_egg.png: %v", err)
+		log.Printf("Error: %v", err)
 	}
-	imgWhiteEgg, _, err = ebitenutil.NewImageFromFile("avi/white_egg.png")
+	imgWhiteEgg, err = loadImage("avi/white_egg.png")
 	if err != nil {
-		log.Printf("Error loading white_egg.png: %v", err)
+		log.Printf("Error: %v", err)
 	}
-	imgGoldEgg, _, err = ebitenutil.NewImageFromFile("avi/gold_egg.png")
+	imgGoldEgg, err = loadImage("avi/gold_egg.png")
 	if err != nil {
-		log.Printf("Error loading gold_egg.png: %v", err)
+		log.Printf("Error: %v", err)
 	}
-	// Load heart sprites
-	imgHeart1, _, err = ebitenutil.NewImageFromFile("avi/heart1.png")
+	imgHeart1, err = loadImage("avi/heart1.png")
 	if err != nil {
-		log.Printf("Error loading heart1.png: %v", err)
+		log.Printf("Error: %v", err)
 	}
-	imgHeart2, _, err = ebitenutil.NewImageFromFile("avi/heart2.png")
+	imgHeart2, err = loadImage("avi/heart2.png")
 	if err != nil {
-		log.Printf("Error loading heart2.png: %v", err)
+		log.Printf("Error: %v", err)
 	}
 
-	mp3File, err := os.Open("music/converted_new_music.mp3")
+	// Load audio
+	player, err = loadAudio("music/converted_new_music.mp3")
 	if err != nil {
-		log.Fatalf("Error opening converted_new_music.mp3: %v", err)
-	}
-	defer mp3File.Close()
-	if mp3File != nil {
-		mp3Stream, err := mp3.DecodeWithSampleRate(44100, mp3File)
-		if err != nil {
-			log.Fatalf("Error decoding converted_new_music.mp3: %v", err)
-		}
-		if mp3Stream != nil {
-			player, err = audioContext.NewPlayer(audio.NewInfiniteLoop(mp3Stream, mp3Stream.Length()))
-			if err != nil {
-				log.Fatalf("Error creating background music player: %v", err)
-			}
-			if player != nil {
-				player.SetVolume(1.0)
-				player.Play()
-			}
-		}
+		log.Printf("Error: %v", err)
+	} else if player != nil {
+		player.SetVolume(1.0)
+		player.Play()
 	}
 
-	loseHeartFile, err := os.Open("music/lose_heart.mp3")
+	loseHeartPlayer, err := loadAudio("music/lose_heart.mp3")
 	if err != nil {
-		// No logging
+		log.Printf("Error: %v", err)
 	}
-	var loseHeartPlayer *audio.Player
-	if loseHeartFile != nil {
-		defer loseHeartFile.Close()
-		loseHeartStream, err := mp3.DecodeWithSampleRate(44100, loseHeartFile)
-		if err == nil {
-			loseHeartPlayer, err = audioContext.NewPlayer(loseHeartStream)
-			if err == nil && loseHeartPlayer != nil {
-				loseHeartPlayer.SetVolume(1.0)
-			}
-		}
+	gainHeartPlayer, err := loadAudio("music/gain_heart.mp3")
+	if err != nil {
+		log.Printf("Error: %v", err)
+	}
+	scoreHeartPlayer, err := loadAudio("music/score_heart.mp3")
+	if err != nil {
+		log.Printf("Error: %v", err)
 	}
 
-	gainHeartFile, err := os.Open("music/gain_heart.mp3")
-	if err != nil {
-		// No logging
+	if loseHeartPlayer != nil {
+		loseHeartPlayer.SetVolume(1.0)
 	}
-	var gainHeartPlayer *audio.Player
-	if gainHeartFile != nil {
-		defer gainHeartFile.Close()
-		gainHeartStream, err := mp3.DecodeWithSampleRate(44100, gainHeartFile)
-		if err == nil {
-			gainHeartPlayer, err = audioContext.NewPlayer(gainHeartStream)
-			if err == nil && gainHeartPlayer != nil {
-				gainHeartPlayer.SetVolume(1.0)
-			}
-		}
+	if gainHeartPlayer != nil {
+		gainHeartPlayer.SetVolume(1.0)
 	}
-
-	scoreHeartFile, err := os.Open("music/score_heart.mp3")
-	if err != nil {
-		// No logging
-	}
-	var scoreHeartPlayer *audio.Player
-	if scoreHeartFile != nil {
-		defer scoreHeartFile.Close()
-		scoreHeartStream, err := mp3.DecodeWithSampleRate(44100, scoreHeartFile)
-		if err == nil {
-			scoreHeartPlayer, err = audioContext.NewPlayer(scoreHeartStream)
-			if err == nil && scoreHeartPlayer != nil {
-				scoreHeartPlayer.SetVolume(1.5)
-			}
-		}
+	if scoreHeartPlayer != nil {
+		scoreHeartPlayer.SetVolume(1.5)
 	}
 
 	ebiten.SetWindowSize(screenWidth, screenHeight)
