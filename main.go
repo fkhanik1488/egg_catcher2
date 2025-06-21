@@ -74,7 +74,7 @@ type Game struct {
 	lives             int
 	gameOver          bool
 	showLeaderboard   bool
-	replayButton      Button
+	playagainButton   Button
 	quitButton        Button
 	leaderboardButton Button
 	playerID          int
@@ -161,12 +161,12 @@ func NewGame(playerID int, loseHeartPlayer, gainHeartPlayer, scoreHeartPlayer *a
 	g.hens[1] = Hen{x: 100, y: 108}
 	g.hens[2] = Hen{x: 650, y: 58}
 	g.hens[3] = Hen{x: 700, y: 108}
-	g.replayButton = Button{
+	g.playagainButton = Button{
 		x:     screenWidth/3 - buttonWidth - 10,
 		y:     screenHeight/3 + 20,
 		w:     buttonWidth,
 		h:     buttonHeight,
-		label: "Replay",
+		label: "Play again",
 	}
 	g.quitButton = Button{
 		x:     screenWidth/3 + 10,
@@ -611,12 +611,12 @@ func (g *Game) Update() error {
 	if g.gameOver {
 		cx, cy := ebiten.CursorPosition()
 		mx, my := float64(cx), float64(cy)
-		g.replayButton.hovered = g.replayButton.IsInside(mx, my)
+		g.playagainButton.hovered = g.playagainButton.IsInside(mx, my)
 		g.quitButton.hovered = g.quitButton.IsInside(mx, my)
 		g.leaderboardButton.hovered = g.leaderboardButton.IsInside(mx, my)
 
 		if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
-			if g.replayButton.hovered {
+			if g.playagainButton.hovered {
 				if err := saveGameData(g); err != nil {
 					log.Printf("Error saving game data: %v", err)
 				}
@@ -705,11 +705,10 @@ func (g *Game) Update() error {
 				accel := 0.03 + 0.03*float64(g.level)
 				if g.eggs[i].vx > 0 {
 					g.eggs[i].vx += accel / math.Sqrt(2)
-					g.eggs[i].vy += accel / math.Sqrt(2)
 				} else {
 					g.eggs[i].vx -= accel / math.Sqrt(2)
-					g.eggs[i].vy += accel / math.Sqrt(2)
 				}
+				g.eggs[i].vy += accel / math.Sqrt(2)
 				g.eggs[i].x += g.eggs[i].vx
 				g.eggs[i].y += g.eggs[i].vy
 				if (g.eggs[i].vx > 0 && g.eggs[i].x >= g.eggs[i].transitionX) ||
@@ -812,7 +811,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 				}
 			}
 		}
-		g.drawButton(textImg, &g.replayButton)
+		g.drawButton(textImg, &g.playagainButton)
 		g.drawButton(textImg, &g.quitButton)
 		g.drawButton(textImg, &g.leaderboardButton)
 		op := &ebiten.DrawImageOptions{}
