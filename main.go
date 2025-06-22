@@ -976,13 +976,9 @@ func (g *Game) drawButton(screen *ebiten.Image, b *Button) {
 }
 
 func clearDatabase(db *sql.DB) error {
-	_, err := db.Exec("TRUNCATE TABLE games RESTART IDENTITY CASCADE")
+	_, err := db.Exec("TRUNCATE TABLE games, players RESTART IDENTITY CASCADE")
 	if err != nil {
-		return fmt.Errorf("failed to clear games table: %v", err)
-	}
-	_, err = db.Exec("TRUNCATE TABLE players RESTART IDENTITY")
-	if err != nil {
-		return fmt.Errorf("failed to clear players table: %v", err)
+		return fmt.Errorf("failed to clear tables: %v", err)
 	}
 	return nil
 }
