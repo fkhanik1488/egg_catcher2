@@ -14,6 +14,7 @@ import (
 	_ "github.com/lib/pq" // PostgreSQL driver
 	"golang.org/x/crypto/bcrypt"
 
+	_ "embed"
 	"image/color"
 	_ "image/png"
 	"io"
@@ -23,8 +24,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	_ "embed"
 )
 
 //go:embed avi/*.png
@@ -38,29 +37,29 @@ const (
 	screenHeight = 600
 	wolfWidth    = 50
 	wolfHeight   = 50
-	basketWidth  = 80 // Increased to expand right
-	basketHeight = 60 // Reduced to upper rectangle
-	henWidth     = 38 // Increased from 40 to 48
-	henHeight    = 38 // Increased from 40 to 48
-	eggSize      = 14 // Updated to match width of new egg textures (14x16)
-	heartSize    = 30 // Increased to 30 for wider hearts
+	basketWidth  = 80
+	basketHeight = 60
+	henWidth     = 38
+	henHeight    = 38
+	eggSize      = 14
+	heartSize    = 30
 	buttonWidth  = 200
 	buttonHeight = 50
 )
 
 var (
 	db                *sql.DB
-	audioContext      *audio.Context // Глобальная переменная для аудио-контекста
-	imgBackgroundMenu *ebiten.Image  // Background for auth and Game Over screen
-	imgBackgroundMain *ebiten.Image  // Background for game screen
-	imgHen            *ebiten.Image  // Sprite for hens
-	imgWolf           *ebiten.Image  // Sprite for wolf (replaces basket)
-	imgHeart1         *ebiten.Image  // Sprite for full heart
-	imgHeart2         *ebiten.Image  // Sprite for gray (lost) heart
-	imgFakeEgg        *ebiten.Image  // Sprite for fake egg
-	imgGoldEgg        *ebiten.Image  // Sprite for gold egg
-	imgWhiteEgg       *ebiten.Image  // Sprite for white egg
-	player            *audio.Player  // Глобальная переменная для управления музыкой
+	audioContext      *audio.Context
+	imgBackgroundMenu *ebiten.Image
+	imgBackgroundMain *ebiten.Image
+	imgHen            *ebiten.Image
+	imgWolf           *ebiten.Image
+	imgHeart1         *ebiten.Image
+	imgHeart2         *ebiten.Image
+	imgFakeEgg        *ebiten.Image
+	imgGoldEgg        *ebiten.Image
+	imgWhiteEgg       *ebiten.Image
+	player            *audio.Player
 )
 
 type Game struct {
@@ -81,8 +80,8 @@ type Game struct {
 	loseHeartPlayer   *audio.Player
 	gainHeartPlayer   *audio.Player
 	scoreHeartPlayer  *audio.Player
-	isMoving          bool // Сохраняем флаг для предотвращения телепортации
-	isPaused          bool // Флаг паузы
+	isMoving          bool
+	isPaused          bool
 }
 
 type Hen struct {
@@ -219,17 +218,14 @@ func (g *Game) spawnEgg() {
 }
 
 func initDB() (*sql.DB, error) {
-	// Зашитая строка подключения
 	dbURL := "postgres://eggcatcher:fimoz@185.207.1.110:5432/egg_catcher?sslmode=disable"
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %v", err)
 	}
-	// Проверка подключения
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %v", err)
 	}
-	// Создание таблицы players
 	_, err = db.Exec(`
         CREATE TABLE IF NOT EXISTS players (
             id SERIAL PRIMARY KEY,
@@ -241,7 +237,6 @@ func initDB() (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create players table: %v", err)
 	}
-	// Создание таблицы games
 	_, err = db.Exec(`
         CREATE TABLE IF NOT EXISTS games (
             id SERIAL PRIMARY KEY,
@@ -282,7 +277,6 @@ func authenticate(db *sql.DB, username, password string, isRegister bool) (int, 
 		if err != nil {
 			return 0, fmt.Errorf("failed to hash password: %v", err)
 		}
-		// Используем RETURNING id для получения ID новой записи
 		err = db.QueryRow("INSERT INTO players (name, high_score, password) VALUES ($1, 0, $2) RETURNING id", username, string(hashedPassword)).Scan(&playerID)
 		if err != nil {
 			log.Printf("Failed to insert new player '%s': %v", username, err)
@@ -341,7 +335,7 @@ func saveGameData(g *Game) error {
 		return fmt.Errorf("failed to save game data: %v", err)
 	}
 	var currentHighScore int
-	err = db.QueryRow("SELECT high_score FROM players WHERE id = $1", g.playerID).Scan(&currentHighScore) // Fix: Use &currentHighScore
+	err = db.QueryRow("SELECT high_score FROM players WHERE id = $1", g.playerID).Scan(&currentHighScore)
 	if err != nil {
 		log.Printf("Failed to get current high score for player ID %d: %v", g.playerID, err)
 		return fmt.Errorf("failed to get current high score: %v", err)
@@ -536,7 +530,6 @@ func (a *AuthState) Update() error {
 }
 
 func (a *AuthState) Draw(screen *ebiten.Image) {
-	// Use background_menu.png for auth screen
 	if imgBackgroundMenu != nil {
 		screen.DrawImage(imgBackgroundMenu, nil)
 	} else {
@@ -650,21 +643,19 @@ func (g *Game) Update() error {
 	}
 
 	if g.isPaused {
-		// Проверка выхода из паузы
 		if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
 			g.isPaused = false
 			if player != nil {
-				player.Play() // Возобновление музыки с текущей позиции
+				player.Play()
 			}
 		}
 		return nil
 	}
 
-	// Переключение паузы
 	if inpututil.IsKeyJustPressed(ebiten.KeyP) {
 		g.isPaused = true
 		if player != nil {
-			player.Pause() // Остановка музыки
+			player.Pause()
 		}
 		return nil
 	}
@@ -673,7 +664,6 @@ func (g *Game) Update() error {
 		g.level++
 	}
 
-	// Wolf moves left and right as originally
 	if ebiten.IsKeyPressed(ebiten.KeyA) && g.wolfX > 0 {
 		if !g.isMoving {
 			g.isMoving = true
@@ -717,7 +707,11 @@ func (g *Game) Update() error {
 				}
 			} else {
 				g.eggs[i].vy += 0.1
-				g.eggs[i].x += g.eggs[i].vx
+				vxFactor := 1.0
+				if g.eggs[i].vx < 0 {
+					vxFactor = 0.75
+				}
+				g.eggs[i].x += g.eggs[i].vx * vxFactor
 				g.eggs[i].y += g.eggs[i].vy
 			}
 			if g.eggs[i].y > screenHeight {
@@ -784,7 +778,6 @@ func (g *Game) Update() error {
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
-	// Use background_menu.png for Game Over screen, background_main.png for active game
 	if g.gameOver {
 		if imgBackgroundMenu != nil {
 			screen.DrawImage(imgBackgroundMenu, nil)
@@ -821,14 +814,12 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		return
 	}
 
-	// Use background_main.png for active game
 	if imgBackgroundMain != nil {
 		screen.DrawImage(imgBackgroundMain, nil)
 	} else {
 		screen.Fill(color.RGBA{0, 128, 255, 255})
 	}
 
-	// Draw wolf sprite with scaling, raised to align basket top
 	basketX := float64(g.wolfX - basketWidth/2 + wolfWidth/2)
 	if imgWolf != nil {
 		op := &ebiten.DrawImageOptions{}
@@ -839,7 +830,6 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		ebitenutil.DrawRect(screen, basketX, g.basketY-20, float64(basketWidth), float64(basketHeight), color.RGBA{255, 0, 0, 255})
 	}
 
-	// Draw hens with sprite or fallback to yellow rectangles
 	for _, hen := range g.hens {
 		if imgHen != nil {
 			op := &ebiten.DrawImageOptions{}
@@ -864,11 +854,11 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		startY := hen.y + henHeight
 		endX, endY := startX, startY
 		if startX < screenWidth/2 {
-			startY += 5
+			startY += 8
 			endX = startX + 67.5
 			endY = startY + 67.5
 		} else {
-			startY += 10
+			startY += 1
 			endX = startX - 67.5
 			endY = startY + 67.5
 		}
@@ -882,7 +872,6 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		screen.DrawImage(tempImg, op)
 	}
 
-	// Draw eggs with realistic rolling and falling animation
 	for _, egg := range g.eggs {
 		if egg.active {
 			var eggImg *ebiten.Image
@@ -896,7 +885,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 			}
 			if eggImg != nil {
 				op := &ebiten.DrawImageOptions{}
-				op.GeoM.Translate(-eggSize/2, -eggSize/2-3)
+				op.GeoM.Translate(-eggSize/2, -eggSize/2)
 				var angle float64
 				if egg.phase == "rolling" {
 					angle += egg.vx * 1.0
@@ -905,7 +894,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 				}
 				angle = math.Mod(angle, 2*math.Pi)
 				op.GeoM.Rotate(angle)
-				op.GeoM.Translate(egg.x+eggSize/2, egg.y+eggSize/2)
+				op.GeoM.Translate(egg.x, egg.y)
 				screen.DrawImage(eggImg, op)
 			} else {
 				tempImg := ebiten.NewImage(int(eggSize), int(eggSize))
@@ -920,13 +909,12 @@ func (g *Game) Draw(screen *ebiten.Image) {
 				op := &ebiten.DrawImageOptions{}
 				op.GeoM.Translate(-eggSize/2, -eggSize/2)
 				op.GeoM.Rotate(egg.y / 20 * 2 * math.Pi)
-				op.GeoM.Translate(egg.x+eggSize/2, egg.y+eggSize/2)
+				op.GeoM.Translate(egg.x, egg.y)
 				screen.DrawImage(tempImg, op)
 			}
 		}
 	}
 
-	// Draw hearts with separate sprites, positioned max right
 	for i := 0; i < 3; i++ {
 		op := &ebiten.DrawImageOptions{}
 		op.GeoM.Translate(640.0+float64(i*55), -10.0)
@@ -952,11 +940,10 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	op.GeoM.Translate(10, 10)
 	screen.DrawImage(textImg, op)
 
-	// Отображение паузы поверх всех элементов
 	if g.isPaused {
 		pauseTextImg := ebiten.NewImage(screenWidth, screenHeight)
 		pauseOp := &ebiten.DrawImageOptions{}
-		pauseOp.GeoM.Scale(3.0, 3.0) // Увеличение надписи для большей видимости
+		pauseOp.GeoM.Scale(3.0, 3.0)
 		pauseOp.GeoM.Translate(float64(screenWidth/2-150), float64(screenHeight/2-60))
 		screen.DrawImage(pauseTextImg, pauseOp)
 	}
@@ -1010,7 +997,7 @@ func loadAudio(path string) (*audio.Player, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error decoding embedded %s: %v", path, err)
 	}
-	player, err := audioContext.NewPlayer(mp3Stream) // Используем глобальный audioContext
+	player, err := audioContext.NewPlayer(mp3Stream)
 	if err != nil {
 		return nil, fmt.Errorf("error creating player for %s: %v", path, err)
 	}
@@ -1022,51 +1009,49 @@ func main() {
 	flag.Parse()
 
 	rand.Seed(time.Now().UnixNano())
-	audioContext = audio.NewContext(44100) // Инициализация глобального аудио-контекста
+	audioContext = audio.NewContext(44100)
 
-	// Load background and hen images
 	var err error
 	imgBackgroundMenu, err = loadImage("avi/background_menu.png")
 	if err != nil {
-		log.Printf("Error: %v", err)
+		log.Printf("Error loading background_menu.png: %v", err)
 	}
 	imgBackgroundMain, err = loadImage("avi/background_main.png")
 	if err != nil {
-		log.Printf("Error: %v", err)
+		log.Printf("Error loading background_main.png: %v", err)
 	}
 	imgHen, err = loadImage("avi/hen.png")
 	if err != nil {
-		log.Printf("Error: %v", err)
+		log.Printf("Error loading hen.png: %v", err)
 	}
 	imgWolf, err = loadImage("avi/wolf.png")
 	if err != nil {
-		log.Printf("Error: %v", err)
+		log.Printf("Error loading wolf.png: %v", err)
 	}
 	imgFakeEgg, err = loadImage("avi/fake_egg.png")
 	if err != nil {
-		log.Printf("Error: %v", err)
+		log.Printf("Error loading fake_egg.png: %v", err)
 	}
 	imgWhiteEgg, err = loadImage("avi/white_egg.png")
 	if err != nil {
-		log.Printf("Error: %v", err)
+		log.Printf("Error loading white_egg.png: %v", err)
 	}
 	imgGoldEgg, err = loadImage("avi/gold_egg.png")
 	if err != nil {
-		log.Printf("Error: %v", err)
+		log.Printf("Error loading gold_egg.png: %v", err)
 	}
 	imgHeart1, err = loadImage("avi/heart1.png")
 	if err != nil {
-		log.Printf("Error: %v", err)
+		log.Printf("Error loading heart1.png: %v", err)
 	}
 	imgHeart2, err = loadImage("avi/heart2.png")
 	if err != nil {
-		log.Printf("Error: %v", err)
+		log.Printf("Error loading heart2.png: %v", err)
 	}
 
-	// Load audio
 	player, err = loadAudio("music/converted_new_music.mp3")
 	if err != nil {
-		log.Printf("Error: %v", err)
+		log.Printf("Error loading converted_new_music.mp3: %v", err)
 	} else if player != nil {
 		player.SetVolume(1.0)
 		player.Play()
@@ -1074,15 +1059,15 @@ func main() {
 
 	loseHeartPlayer, err := loadAudio("music/lose_heart.mp3")
 	if err != nil {
-		log.Printf("Error: %v", err)
+		log.Printf("Error loading lose_heart.mp3: %v", err)
 	}
 	gainHeartPlayer, err := loadAudio("music/gain_heart.mp3")
 	if err != nil {
-		log.Printf("Error: %v", err)
+		log.Printf("Error loading gain_heart.mp3: %v", err)
 	}
 	scoreHeartPlayer, err := loadAudio("music/score_heart.mp3")
 	if err != nil {
-		log.Printf("Error: %v", err)
+		log.Printf("Error loading score_heart.mp3: %v", err)
 	}
 
 	if loseHeartPlayer != nil {
