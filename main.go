@@ -33,18 +33,19 @@ var imageFiles embed.FS
 var audioFiles embed.FS
 
 const (
-	screenWidth  = 800
-	screenHeight = 600
-	wolfWidth    = 50
-	wolfHeight   = 50
-	basketWidth  = 80
-	basketHeight = 60
-	henWidth     = 38
-	henHeight    = 38
-	eggSize      = 14
-	heartSize    = 30
-	buttonWidth  = 200
-	buttonHeight = 50
+	screenWidth        = 800
+	screenHeight       = 600
+	wolfWidth          = 50
+	wolfHeight         = 50
+	basketWidth        = 80
+	basketHeight       = 60
+	henWidth           = 38
+	henHeight          = 38
+	eggSize            = 14
+	heartSize          = 30
+	buttonWidth        = 200
+	buttonHeight       = 50
+	bossScoreThreshold = 5 // Очки для появления босса
 )
 
 var (
@@ -59,7 +60,13 @@ var (
 	imgFakeEgg        *ebiten.Image
 	imgGoldEgg        *ebiten.Image
 	imgWhiteEgg       *ebiten.Image
+	imgBossBackground *ebiten.Image // Фон комнаты босса
+	imgBossUfo        *ebiten.Image // Спрайт летающей тарелки
+	imgBossHealthBar  *ebiten.Image // Шкала здоровья босса
+	imgBossHit        *ebiten.Image // Эффект урона
 	player            *audio.Player
+	bossMusic         *audio.Player // Музыка босса
+	bossHitEffect     *audio.Player // Звук попадания
 )
 
 type Game struct {
@@ -82,6 +89,11 @@ type Game struct {
 	scoreHeartPlayer  *audio.Player
 	isMoving          bool
 	isPaused          bool
+	boss              *Boss         // Указатель на босса
+	inBossRoom        bool          // Флаг комнаты босса
+	gameWon           bool          // Флаг победы
+	bossMusic         *audio.Player // Музыка босса
+	bossHitEffect     *audio.Player // Звук попадания
 }
 
 type Hen struct {
@@ -95,12 +107,25 @@ type Egg struct {
 	transitionX float64
 	active      bool
 	value       int
+	isHarmful   bool // Вредное (true) или полезное (false)
 }
 
 type Button struct {
 	x, y, w, h float64
 	label      string
 	hovered    bool
+}
+
+type Boss struct {
+	x, y              float64 // Позиция тарелки
+	speed             float64 // Скорость движения
+	health            int     // Здоровье (10)
+	dodgeCount        int     // Счётчик уворотов
+	eggSpawnTime      float64 // Таймер спавна яиц
+	vx, vy            float64 // Скорость яиц
+	direction         float64 // Направление (1 или -1)
+	hitAnimationTimer float64 // Таймер анимации урона
+	hitAnimationType  string  // "blink" или "explosion"
 }
 
 func (b *Button) IsInside(x, y float64) bool {
@@ -135,9 +160,11 @@ type GameWrapper struct {
 	loseHeartPlayer  *audio.Player
 	gainHeartPlayer  *audio.Player
 	scoreHeartPlayer *audio.Player
+	bossMusic        *audio.Player // Музыка босса
+	bossHitEffect    *audio.Player // Звук попадания
 }
 
-func NewGame(playerID int, loseHeartPlayer, gainHeartPlayer, scoreHeartPlayer *audio.Player) *Game {
+func NewGame(playerID int, loseHeartPlayer, gainHeartPlayer, scoreHeartPlayer, bossMusic, bossHitEffect *audio.Player) *Game {
 	g := &Game{
 		wolfX:            screenWidth/2 - wolfWidth/2,
 		wolfY:            screenHeight - wolfHeight - 20,
@@ -154,6 +181,11 @@ func NewGame(playerID int, loseHeartPlayer, gainHeartPlayer, scoreHeartPlayer *a
 		scoreHeartPlayer: scoreHeartPlayer,
 		isMoving:         false,
 		isPaused:         false,
+		boss:             nil,
+		inBossRoom:       false,
+		gameWon:          false,
+		bossMusic:        bossMusic,
+		bossHitEffect:    bossHitEffect,
 	}
 	loadPlayerData(g)
 	g.hens[0] = Hen{x: 150, y: 58}
@@ -187,33 +219,50 @@ func NewGame(playerID int, loseHeartPlayer, gainHeartPlayer, scoreHeartPlayer *a
 func (g *Game) spawnEgg() {
 	probability := rand.Float64()
 	var valueEgg int
+	var isHarmful bool
 	if probability < 0.1 {
 		valueEgg = 0 // fake_egg
+		isHarmful = true
 	} else if probability < 0.15 {
 		valueEgg = 1 // white_egg
+		isHarmful = false
 	} else {
 		valueEgg = 2 // gold_egg
+		isHarmful = false
 	}
-	henIndex := rand.Intn(4)
-	eggX := g.hens[henIndex].x + henWidth/2 - eggSize/2
-	vx, transitionX := 0.0, 0.0
-	baseSpeed := 1.0 + 1.0*float64(g.level-1)
-	if eggX < screenWidth/2 {
-		vx = baseSpeed / math.Sqrt(2)
-		transitionX = eggX + 67.5
+	var eggX, vx, transitionX, eggY float64
+	var phase string
+	var henIndex int
+	if g.inBossRoom {
+		eggX = g.boss.x
+		vx = 0
+		transitionX = eggX
+		phase = "falling"
+		eggY = g.boss.y + 64
 	} else {
-		vx = -baseSpeed / math.Sqrt(2)
-		transitionX = eggX - 67.5
+		henIndex = rand.Intn(4)
+		eggX = g.hens[henIndex].x + henWidth/2 - eggSize/2
+		baseSpeed := 1.0 + 1.0*float64(g.level-1)
+		if eggX < screenWidth/2 {
+			vx = baseSpeed / math.Sqrt(2)
+			transitionX = eggX + 67.5
+		} else {
+			vx = -baseSpeed / math.Sqrt(2)
+			transitionX = eggX - 67.5
+		}
+		phase = "rolling"
+		eggY = g.hens[henIndex].y + float64(henHeight)
 	}
 	g.eggs = append(g.eggs, Egg{
 		x:           eggX,
-		y:           g.hens[henIndex].y + float64(henHeight),
+		y:           eggY,
 		vx:          vx,
-		vy:          baseSpeed / math.Sqrt(2),
-		phase:       "rolling",
+		vy:          2.0,
+		phase:       phase,
 		transitionX: transitionX,
 		active:      true,
 		value:       valueEgg,
+		isHarmful:   isHarmful,
 	})
 }
 
@@ -227,26 +276,26 @@ func initDB() (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to ping database: %v", err)
 	}
 	_, err = db.Exec(`
-        CREATE TABLE IF NOT EXISTS players (
-            id SERIAL PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            high_score INTEGER DEFAULT 0,
-            password TEXT NOT NULL
-        )
-    `)
+CREATE TABLE IF NOT EXISTS players (
+id SERIAL PRIMARY KEY,
+name TEXT NOT NULL UNIQUE,
+high_score INTEGER DEFAULT 0,
+password TEXT NOT NULL
+)
+`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create players table: %v", err)
 	}
 	_, err = db.Exec(`
-        CREATE TABLE IF NOT EXISTS games (
-            id SERIAL PRIMARY KEY,
-            player_id INTEGER NOT NULL,
-            score INTEGER NOT NULL,
-            lives INTEGER NOT NULL,
-            date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
-        )
-    `)
+CREATE TABLE IF NOT EXISTS games (
+id SERIAL PRIMARY KEY,
+player_id INTEGER NOT NULL,
+score INTEGER NOT NULL,
+lives INTEGER NOT NULL,
+date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+)
+`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create games table: %v", err)
 	}
@@ -579,7 +628,7 @@ func (w *GameWrapper) Update() error {
 		return w.authState.Update()
 	}
 	if w.authState != nil && w.authState.done {
-		w.game = NewGame(w.authState.playerID, w.loseHeartPlayer, w.gainHeartPlayer, w.scoreHeartPlayer)
+		w.game = NewGame(w.authState.playerID, w.loseHeartPlayer, w.gainHeartPlayer, w.scoreHeartPlayer, w.bossMusic, w.bossHitEffect)
 		w.authState = nil
 	}
 	if w.game != nil {
@@ -601,6 +650,134 @@ func (w *GameWrapper) Layout(outsideWidth, outsideHeight int) (int, int) {
 }
 
 func (g *Game) Update() error {
+	if !g.inBossRoom && g.score >= bossScoreThreshold {
+		log.Printf("Activating boss room at score %d", g.score)
+		g.inBossRoom = true
+		g.boss = &Boss{
+			x:                 screenWidth / 2, // Центр по X (400)
+			y:                 100,             // Верхняя часть экрана
+			speed:             3.0,             // Скорость движения
+			health:            10,              // Здоровье
+			dodgeCount:        0,               // Увороты
+			eggSpawnTime:      1.0,             // Таймер спавна яиц (1 сек)
+			vx:                0.0,             // Скорость яиц по X
+			vy:                2.0,             // Скорость яиц по Y
+			direction:         1.0,             // Направление вправо
+			hitAnimationTimer: 0.0,
+			hitAnimationType:  "blink", // Анимация мигания
+		}
+		if player != nil {
+			player.Pause()
+		}
+		if g.bossMusic != nil {
+			if err := g.bossMusic.Rewind(); err != nil {
+				log.Printf("Error rewinding boss music: %v", err)
+			}
+			g.bossMusic.Play()
+		}
+	}
+
+	if g.inBossRoom {
+		// Логика босса
+		if g.boss != nil {
+			// Движение босса вправо-влево
+			g.boss.x += g.boss.speed * g.boss.direction
+			if g.boss.x > screenWidth-128 || g.boss.x < 128 { // 128 = 64*2 (размер босса с масштабом)
+				g.boss.direction *= -1 // Меняем направление
+			}
+
+			// Спавн яиц
+			g.boss.eggSpawnTime -= 1.0 / 60.0 // Уменьшаем таймер (60 FPS)
+			if g.boss.eggSpawnTime <= 0 {
+				g.spawnEgg()
+				g.boss.eggSpawnTime = 1.0 // Сброс таймера
+			}
+
+			// Обработка яиц (движение, ловля, жизни)
+			for i := range g.eggs {
+				if g.eggs[i].active {
+					g.eggs[i].y += g.eggs[i].vy // Падение вниз
+					if g.eggs[i].y > screenHeight {
+						g.eggs[i].active = false
+						if !g.eggs[i].isHarmful {
+							g.lives--
+							if g.loseHeartPlayer != nil {
+								if err := g.loseHeartPlayer.Rewind(); err != nil {
+									log.Printf("Error rewinding lose heart sound: %v", err)
+								}
+								g.loseHeartPlayer.Play()
+							}
+						}
+					}
+					if g.eggs[i].y >= g.basketY && g.eggs[i].y <= g.basketY+basketHeight &&
+						g.eggs[i].x >= g.wolfX-basketWidth/2+wolfWidth/2 && g.eggs[i].x <= g.wolfX+basketWidth/2+wolfWidth/2 {
+						g.eggs[i].active = false
+						if g.eggs[i].isHarmful {
+							g.lives--
+							if g.loseHeartPlayer != nil {
+								if err := g.loseHeartPlayer.Rewind(); err != nil {
+									log.Printf("Error rewinding lose heart sound: %v", err)
+								}
+								g.loseHeartPlayer.Play()
+							}
+						} else {
+							g.score++
+							if g.eggs[i].value == 2 && g.scoreHeartPlayer != nil {
+								if err := g.scoreHeartPlayer.Rewind(); err != nil {
+									log.Printf("Error rewinding score heart sound: %v", err)
+								}
+								g.scoreHeartPlayer.Play()
+							}
+							if g.eggs[i].value == 1 && g.lives < 3 {
+								g.lives++
+								if g.gainHeartPlayer != nil {
+									if err := g.gainHeartPlayer.Rewind(); err != nil {
+										log.Printf("Error rewinding gain heart sound: %v", err)
+									}
+									g.gainHeartPlayer.Play()
+								}
+							}
+						}
+						if g.score > g.record {
+							g.record = g.score
+						}
+					}
+				}
+			}
+
+			// Обновление списка яиц
+			newEggs := make([]Egg, 0, len(g.eggs))
+			for _, egg := range g.eggs {
+				if egg.active {
+					newEggs = append(newEggs, egg)
+				}
+			}
+			g.eggs = newEggs
+
+			// Движение волка
+			if ebiten.IsKeyPressed(ebiten.KeyA) && g.wolfX > 0 {
+				if !g.isMoving {
+					g.isMoving = true
+				}
+				g.wolfX -= 5
+			} else if ebiten.IsKeyPressed(ebiten.KeyD) && g.wolfX < screenWidth-wolfWidth {
+				if !g.isMoving {
+					g.isMoving = true
+				}
+				g.wolfX += 5
+			} else {
+				g.isMoving = false
+			}
+
+			// Проверка проигрыша
+			if g.lives <= 0 {
+				g.gameOver = true
+			}
+
+			return nil
+		}
+	}
+
 	if g.gameOver {
 		cx, cy := ebiten.CursorPosition()
 		mx, my := float64(cx), float64(cy)
@@ -613,7 +790,7 @@ func (g *Game) Update() error {
 				if err := saveGameData(g); err != nil {
 					log.Printf("Error saving game data: %v", err)
 				}
-				*g = *NewGame(g.playerID, g.loseHeartPlayer, g.gainHeartPlayer, g.scoreHeartPlayer)
+				*g = *NewGame(g.playerID, g.loseHeartPlayer, g.gainHeartPlayer, g.scoreHeartPlayer, g.bossMusic, g.bossHitEffect)
 			} else if g.quitButton.hovered {
 				if err := saveGameData(g); err != nil {
 					log.Printf("Error saving game data: %v", err)
@@ -628,7 +805,7 @@ func (g *Game) Update() error {
 			if err := saveGameData(g); err != nil {
 				log.Printf("Error saving game data: %v", err)
 			}
-			*g = *NewGame(g.playerID, g.loseHeartPlayer, g.gainHeartPlayer, g.scoreHeartPlayer)
+			*g = *NewGame(g.playerID, g.loseHeartPlayer, g.gainHeartPlayer, g.scoreHeartPlayer, g.bossMusic, g.bossHitEffect)
 		}
 		if inpututil.IsKeyJustPressed(ebiten.KeyQ) {
 			if err := saveGameData(g); err != nil {
@@ -716,11 +893,11 @@ func (g *Game) Update() error {
 			}
 			if g.eggs[i].y > screenHeight {
 				g.eggs[i].active = false
-				if g.eggs[i].value != 0 {
+				if !g.eggs[i].isHarmful {
 					g.lives--
 					if g.loseHeartPlayer != nil {
 						if err := g.loseHeartPlayer.Rewind(); err != nil {
-							// No logging
+							log.Printf("Error rewinding lose heart sound: %v", err)
 						}
 						g.loseHeartPlayer.Play()
 					}
@@ -729,11 +906,19 @@ func (g *Game) Update() error {
 			if g.eggs[i].y >= g.basketY && g.eggs[i].y <= g.basketY+basketHeight &&
 				g.eggs[i].x >= g.wolfX-basketWidth/2+wolfWidth/2 && g.eggs[i].x <= g.wolfX+basketWidth/2+wolfWidth/2 {
 				g.eggs[i].active = false
-				if g.eggs[i].value != 0 {
+				if g.eggs[i].isHarmful {
+					g.lives--
+					if g.loseHeartPlayer != nil {
+						if err := g.loseHeartPlayer.Rewind(); err != nil {
+							log.Printf("Error rewinding lose heart sound: %v", err)
+						}
+						g.loseHeartPlayer.Play()
+					}
+				} else {
 					g.score++
 					if g.eggs[i].value == 2 && g.scoreHeartPlayer != nil {
 						if err := g.scoreHeartPlayer.Rewind(); err != nil {
-							// No logging
+							log.Printf("Error rewinding score heart sound: %v", err)
 						}
 						g.scoreHeartPlayer.Play()
 					}
@@ -741,18 +926,10 @@ func (g *Game) Update() error {
 						g.lives++
 						if g.gainHeartPlayer != nil {
 							if err := g.gainHeartPlayer.Rewind(); err != nil {
-								// No logging
+								log.Printf("Error rewinding gain heart sound: %v", err)
 							}
 							g.gainHeartPlayer.Play()
 						}
-					}
-				} else {
-					g.lives--
-					if g.loseHeartPlayer != nil {
-						if err := g.loseHeartPlayer.Rewind(); err != nil {
-							// No logging
-						}
-						g.loseHeartPlayer.Play()
 					}
 				}
 				if g.score > g.record {
@@ -778,7 +955,113 @@ func (g *Game) Update() error {
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
-	if g.gameOver {
+	if g.inBossRoom {
+		if imgBossBackground != nil {
+			screen.DrawImage(imgBossBackground, nil)
+		} else {
+			screen.Fill(color.RGBA{0, 0, 50, 255})
+		}
+		if g.boss != nil && imgBossUfo != nil {
+			op := &ebiten.DrawImageOptions{}
+			op.GeoM.Scale(2.0, 2.0) // Масштаб для 64x64 -> 128x128
+			if g.boss.hitAnimationTimer > 0 && g.boss.hitAnimationType == "blink" {
+				op.ColorM.Scale(1, 0.5, 0.5, 1) // Красный оттенок
+			}
+			op.GeoM.Translate(g.boss.x-64, g.boss.y-64) // Центрирование
+			screen.DrawImage(imgBossUfo, op)
+		} else if g.boss != nil {
+			ebitenutil.DrawRect(screen, g.boss.x-64, g.boss.y-64, 128, 128, color.RGBA{0, 255, 0, 255})
+		}
+		if g.boss != nil && imgBossHealthBar != nil {
+			op := &ebiten.DrawImageOptions{}
+			op.GeoM.Scale(float64(g.boss.health)/10.0, 1.0) // Масштаб по здоровью
+			op.GeoM.Translate(10, 10)
+			screen.DrawImage(imgBossHealthBar, op)
+		} else if g.boss != nil {
+			width := float64(g.boss.health * 20)
+			ebitenutil.DrawRect(screen, 10, 10, width, 20, color.RGBA{255, 0, 0, 255})
+		}
+		if g.boss != nil && g.boss.hitAnimationTimer > 0 && g.boss.hitAnimationType == "explosion" && imgBossHit != nil {
+			op := &ebiten.DrawImageOptions{}
+			op.GeoM.Translate(g.boss.x-15, g.boss.y-15) // Центрирование 30x30
+			op.ColorM.Scale(1, 1, 1, 0.7)               // Полупрозрачность
+			screen.DrawImage(imgBossHit, op)
+		}
+		// Отрисовка волка, яиц, сердец, статистики
+		basketX := float64(g.wolfX - basketWidth/2 + wolfWidth/2)
+		if imgWolf != nil {
+			op := &ebiten.DrawImageOptions{}
+			op.GeoM.Scale(2.0, 2.0)
+			op.GeoM.Translate(basketX, g.basketY-20)
+			screen.DrawImage(imgWolf, op)
+		} else {
+			ebitenutil.DrawRect(screen, basketX, g.basketY-20, float64(basketWidth), float64(basketHeight), color.RGBA{255, 0, 0, 255})
+		}
+		for _, egg := range g.eggs {
+			if egg.active {
+				var eggImg *ebiten.Image
+				switch egg.value {
+				case 0:
+					eggImg = imgFakeEgg
+				case 1:
+					eggImg = imgWhiteEgg
+				case 2:
+					eggImg = imgGoldEgg
+				}
+				if eggImg != nil {
+					op := &ebiten.DrawImageOptions{}
+					op.GeoM.Translate(-eggSize/2, -eggSize/2)
+					var angle float64
+					if egg.phase == "falling" {
+						angle += egg.vy * 1.0
+					}
+					angle = math.Mod(angle, 2*math.Pi)
+					op.GeoM.Rotate(angle)
+					op.GeoM.Translate(egg.x, egg.y)
+					screen.DrawImage(eggImg, op)
+				} else {
+					tempImg := ebiten.NewImage(int(eggSize), int(eggSize))
+					ebitenutil.DrawRect(tempImg, 0, 0, eggSize, eggSize, color.RGBA{0, 0, 0, 255})
+					if egg.value == 2 {
+						ebitenutil.DrawRect(tempImg, 1, 1, eggSize-2, eggSize-2, color.RGBA{255, 255, 255, 255})
+					} else if egg.value == 0 {
+						ebitenutil.DrawRect(tempImg, 1, 1, eggSize-2, eggSize-2, color.RGBA{150, 75, 0, 255})
+					} else {
+						ebitenutil.DrawRect(tempImg, 1, 1, eggSize-2, eggSize-2, color.RGBA{255, 220, 0, 255})
+					}
+					op := &ebiten.DrawImageOptions{}
+					op.GeoM.Translate(-eggSize/2, -eggSize/2)
+					op.GeoM.Rotate(egg.y / 20 * 2 * math.Pi)
+					op.GeoM.Translate(egg.x, egg.y)
+					screen.DrawImage(tempImg, op)
+				}
+			}
+		}
+		for i := 0; i < 3; i++ {
+			op := &ebiten.DrawImageOptions{}
+			op.GeoM.Translate(640.0+float64(i*55), -10.0)
+			if imgHeart1 != nil && imgHeart2 != nil {
+				if i < g.lives {
+					screen.DrawImage(imgHeart1, op)
+				} else {
+					screen.DrawImage(imgHeart2, op)
+				}
+			} else {
+				heartColor := color.RGBA{255, 0, 0, 255}
+				if i >= g.lives {
+					heartColor = color.RGBA{128, 128, 128, 255}
+				}
+				ebitenutil.DrawRect(screen, 600.0+float64(i*50), 0.0, heartSize, heartSize, heartColor)
+			}
+		}
+		textImg := ebiten.NewImage(screenWidth, screenHeight)
+		ebitenutil.DebugPrint(textImg, fmt.Sprintf("Score: %d Record: %d Lives: %d Level: %d", g.score, g.record, g.lives, g.level))
+		op := &ebiten.DrawImageOptions{}
+		op.GeoM.Scale(1.5, 1.5)
+		op.GeoM.Translate(10, 10)
+		screen.DrawImage(textImg, op)
+		return
+	} else if g.gameOver {
 		if imgBackgroundMenu != nil {
 			screen.DrawImage(imgBackgroundMenu, nil)
 		} else {
@@ -807,6 +1090,22 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		g.drawButton(textImg, &g.playagainButton)
 		g.drawButton(textImg, &g.quitButton)
 		g.drawButton(textImg, &g.leaderboardButton)
+		op := &ebiten.DrawImageOptions{}
+		op.GeoM.Scale(1.5, 1.5)
+		op.GeoM.Translate(0, 0)
+		screen.DrawImage(textImg, op)
+		return
+	} else if g.gameWon {
+		if imgBackgroundMenu != nil {
+			screen.DrawImage(imgBackgroundMenu, nil)
+		} else {
+			screen.Fill(color.RGBA{0, 128, 255, 255})
+		}
+		textImg := ebiten.NewImage(screenWidth, screenHeight)
+		ebitenutil.DebugPrintAt(textImg, "You Win!", screenWidth/3-50, screenHeight/3-100-70)
+		ebitenutil.DebugPrintAt(textImg, fmt.Sprintf("Your Score: %d", g.score), screenWidth/3-50, screenHeight/3-70-70)
+		ebitenutil.DebugPrintAt(textImg, fmt.Sprintf("Your Record: %d", g.record), screenWidth/3-50, screenHeight/3-40-70)
+		g.drawButton(textImg, &g.quitButton)
 		op := &ebiten.DrawImageOptions{}
 		op.GeoM.Scale(1.5, 1.5)
 		op.GeoM.Translate(0, 0)
@@ -867,7 +1166,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		ebitenutil.DrawRect(tempImg, 0, 0, length, 10, color.RGBA{160, 82, 45, 255})
 		op := &ebiten.DrawImageOptions{}
 		op.GeoM.Translate(-5, -5)
-		op.GeoM.Rotate(math.Atan2(endY-startY, endX-startX))
+		op.GeoM.Rotate(math.Atan2(endY-startX, endX-startX))
 		op.GeoM.Translate(startX, startY+eggSize/2)
 		screen.DrawImage(tempImg, op)
 	}
@@ -942,11 +1241,12 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 	if g.isPaused {
 		pauseTextImg := ebiten.NewImage(screenWidth, screenHeight)
+		ebitenutil.DebugPrintAt(pauseTextImg, "Paused", screenWidth/2-50, screenHeight/2-30)
 		pauseOp := &ebiten.DrawImageOptions{}
 		pauseOp.GeoM.Scale(3.0, 3.0)
 		pauseOp.GeoM.Translate(float64(screenWidth/2-150), float64(screenHeight/2-60))
 		screen.DrawImage(pauseTextImg, pauseOp)
-	}
+	}лш
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
@@ -976,10 +1276,11 @@ func loadImage(path string) (*ebiten.Image, error) {
 		return nil, fmt.Errorf("error opening embedded %s: %v", path, err)
 	}
 	defer file.Close()
-	img, _, err := ebitenutil.NewImageFromReader(file)
+	img, format, err := ebitenutil.NewImageFromReader(file)
 	if err != nil {
-		return nil, fmt.Errorf("error loading embedded %s: %v", path, err)
+		return nil, fmt.Errorf("error loading embedded %s (format: %s): %v", path, format, err)
 	}
+	log.Printf("Successfully loaded image %s (format: %s)", path, format)
 	return img, nil
 }
 
@@ -1048,6 +1349,22 @@ func main() {
 	if err != nil {
 		log.Printf("Error loading heart2.png: %v", err)
 	}
+	imgBossBackground, err = loadImage("avi/boss_background.png")
+	if err != nil {
+		log.Printf("Error loading boss_background.png: %v", err)
+	}
+	imgBossUfo, err = loadImage("avi/boss_ufo.png")
+	if err != nil {
+		log.Printf("Error loading boss_ufo.png: %v", err)
+	}
+	imgBossHealthBar, err = loadImage("avi/boss_health_bar.png")
+	if err != nil {
+		log.Printf("Error loading boss_health_bar.png: %v", err)
+	}
+	imgBossHit, err = loadImage("avi/boss_hit.png")
+	if err != nil {
+		log.Printf("Error loading boss_hit.png: %v", err)
+	}
 
 	player, err = loadAudio("music/converted_new_music.mp3")
 	if err != nil {
@@ -1069,6 +1386,14 @@ func main() {
 	if err != nil {
 		log.Printf("Error loading score_heart.mp3: %v", err)
 	}
+	bossMusic, err = loadAudio("music/boss_music.mp3")
+	if err != nil {
+		log.Printf("Error loading boss_music.mp3: %v", err)
+	}
+	bossHitEffect, err = loadAudio("music/boss_hit.mp3")
+	if err != nil {
+		log.Printf("Error loading boss_hit.mp3: %v", err)
+	}
 
 	if loseHeartPlayer != nil {
 		loseHeartPlayer.SetVolume(1.0)
@@ -1078,6 +1403,12 @@ func main() {
 	}
 	if scoreHeartPlayer != nil {
 		scoreHeartPlayer.SetVolume(1.5)
+	}
+	if bossMusic != nil {
+		bossMusic.SetVolume(1.0)
+	}
+	if bossHitEffect != nil {
+		bossHitEffect.SetVolume(1.0)
 	}
 
 	ebiten.SetWindowSize(screenWidth, screenHeight)
@@ -1127,6 +1458,8 @@ func main() {
 		loseHeartPlayer:  loseHeartPlayer,
 		gainHeartPlayer:  gainHeartPlayer,
 		scoreHeartPlayer: scoreHeartPlayer,
+		bossMusic:        bossMusic,
+		bossHitEffect:    bossHitEffect,
 	}
 	if err := ebiten.RunGame(wrapper); err != nil {
 		log.Fatal(err)
